@@ -1,0 +1,522 @@
+在现实生活中，记录日志非常重要。银行转账时会有转账记录；飞机飞行过程中，会有黑盒子（飞行数据记录器）记录飞行过程中的一切。
+如果有出现什么问题，人们可以通过日志数据来搞清楚到底发生了什么。
+
+对于系统开发、调试以及运行，记录日志都是同样的重要。如果没有日志记录，程序崩溃时你几乎就没办法弄明白到底发生了什么事情。
+举个例子，当你在写一个服务器程序时，记录日志是非常有必要的。下面展示的就是 EZComet.com 服务器的日志文件截图。
+
+
+
+服务崩溃后，如果没有日志，我几乎没办法知道到底发生了错误。日志不仅对于服务器很重要，对于桌面图形应用同样十分重要。
+比如，当你的客户的 PC 机程序崩溃时，你可以让他们把日志文件发给你，这样你就可以找到问题到底出在哪儿。
+相信我，在不同的 PC 环境下，你永远不会知道会有怎样奇怪的问题。我曾经就接收到过这样的错误日志。
+
+2011-08-22 17:52:54,828 - root - ERROR - [Errno 10104] getaddrinfo failed
+Traceback (most recent call last):
+  File "<string>", line 124, in main
+  File "<string>", line 20, in __init__
+  File "h:workspaceprojectbuildpyi.win32mrdjoutPYZ1.pyz/wx._core", line 7978, in __init__
+  File "h:workspaceprojectbuildpyi.win32mrdjoutPYZ1.pyz/wx._core", line 7552, in _BootstrapApp
+  File "<string>", line 84, in OnInit
+  File "h:workspaceprojectbuildpyi.win32mrdjoutPYZ1.pyz/twisted.internet.wxreactor", line 175, in install
+  File "h:workspaceprojectbuildpyi.win32mrdjoutPYZ1.pyz/twisted.internet._threadedselect", line 106, in __init__
+  File "h:workspaceprojectbuildpyi.win32mrdjoutPYZ1.pyz/twisted.internet.base", line 488, in __init__
+  File "h:workspaceprojectbuildpyi.win32mrdjoutPYZ1.pyz/twisted.internet.posixbase", line 266, in installWaker
+  File "h:workspaceprojectbuildpyi.win32mrdjoutPYZ1.pyz/twisted.internet.posixbase", line 74, in __init__
+  File "h:workspaceprojectbuildpyi.win32mrdjoutPYZ1.pyz/socket", line 224, in meth
+gaierror: [Errno 10104] getaddrinfo failed
+
+我最终发现，这个客户的 PC 机被一种病毒感染，导致了调用 gethostname 函数失败。看吧，如果没有日志可以查你怎么可能知道这些。
+
+打印输出不是个好办法
+
+尽管记录日志非常重要，但是并不是所有的开发者都能正确地使用它。我曾看到一些开发者是这样记录日志的，
+在开发的过程中插入 print 语句，开发结束后再将这些语句移除。就像这样:
+
+print 'Start reading database'
+records = model.read_recrods()
+print '# records', records
+print 'Updating record ...'
+model.update_records(records)
+print 'done'
+
+这种方式对于简单脚本型程序有用，但是如果是复杂的系统，你最好不要使用这样的方式。
+首先，你没办法做到在日志文件中只留下极其重要的消息。你会看到大量的消息日志。但是你却找不到任何有用的信息。
+你除了移除这输出语句这外，没别的办法控制代码，但是极有可能的是你忘记了移出那些没用的输出。
+再者，print 输出的所有信息都到了标准输出中，这将严重影响到你从标准输出中查看其它输出数据。
+当然，你也可以把消息输出到 stderr ，但是用 print 做日志记录的方式还是不好。
+
+使用 python 的标准日志模块
+
+那么，怎么样记录日志才是正确的呢？其实非常简单，使用 python 的标准日志模块。多亏 python 社区将日志做成了一个标准模块。
+它非常简单易用且十分灵活。你可以像这样使用日志系统：
+
+import logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+logger.info('Start reading database')
+# read database here
+
+records = {'john': 55, 'tom': 66}
+logger.debug('Records: %s', records)
+logger.info('Updating records ...')
+# update records here
+
+logger.info('Finish updating records')
+
+运行的时候就可看到：
+
+INFO:__main__:Start reading database
+INFO:__main__:Updating records ...
+INFO:__main__:Finish updating records
+
+你可能会问这与使用 print 有什么不同呢。它有以下的优势：
+
+你可以控制消息的级别，过滤掉那些并不重要的消息。
+你可决定输出到什么地方，以及怎么输出。
+
+有许多的重要性别级可供选择，debug、info、warning、error 以及 critical。
+通过赋予 logger 或者 handler 不同的级别，你就可以只输出错误消息到特定的记录文件中，或者在调试时只记录调试信息。
+让我们把 logger 的级别改成 DEBUG 再看一下输出结果：
+
+logging.basicConfig(level=logging.DEBUG)
+
+输出变成了：
+
+INFO:__main__:Start reading database
+DEBUG:__main__:Records: {'john': 55, 'tom': 66}
+INFO:__main__:Updating records ...
+INFO:__main__:Finish updating records
+
+正如看到的那样，我们把 logger 的等级改为 DEBUG 后，调试记录就出现在了输出当中。你也可以选择怎么处理这些消息。
+例如，你可以使用 FileHandler 把记录写进文件中：
+
+import logging
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# create a file handler
+
+handler = logging.FileHandler('hello.log')
+handler.setLevel(logging.INFO)
+
+# create a logging format
+
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+handler.setFormatter(formatter)
+
+# add the handlers to the logger
+
+logger.addHandler(handler)
+
+logger.info('Hello baby')
+
+标准库模块中提供了许多的 handler ，你可以将记录发送到邮箱甚至发送到一个远程的服务器。你也可以实现自己的记录 handler 。
+这里将不具体讲述实现的细节，你可以参考官方文档：Basci Turial、Advanced Tutorial 与 Logging Cookbook。
+
+以合适的等级输出日志记录
+
+有了灵活的日志记录模块后，你可以按适当的等级将日志记录输出到任何地方然后配置它们。那么你可能会问，什么是合适的等级呢？
+在这儿我将分享一些我的经验。
+
+大多数的情况下，你都不想阅读日志中的太多细节。因此，只有你在调试过程中才会使用 DEBUG 等级。
+我只使用 DEBUG 获取详细的调试信息，特别是当数据量很大或者频率很高的时候，比如算法内部每个循环的中间状态。
+
+def complex_algorithm(items):
+    for i, item in enumerate(items):
+        # do some complex algorithm computation
+
+        logger.debug('%s iteration, item=%s', i, item)
+
+在处理请求或者服务器状态变化等日常事务中，我会使用 INFO 等级。
+
+def handle_request(request):
+    logger.info('Handling request %s', request)
+    # handle request here
+
+    result = 'result'
+    logger.info('Return result: %s', result)
+
+def start_service():
+    logger.info('Starting service at port %s ...', port)
+    service.start()
+    logger.info('Service is started')
+
+当发生很重要的事件，但是并不是错误时，我会使用 WARNING 。比如，当用户登录密码错误时，或者连接变慢时。
+
+def authenticate(user_name, password, ip_address):
+    if user_name != USER_NAME and password != PASSWORD:
+        logger.warn('Login attempt to %s from IP %s', user_name, ip_address)
+        return False
+    # do authentication here
+
+有错误发生时肯定会使用 ERROR 等级了。比如抛出异常，IO 操作失败或者连接问题等。
+
+def get_user_by_id(user_id):
+    user = db.read_user(user_id)
+    if user is None:
+        logger.error('Cannot find user with user_id=%s', user_id)
+        return user
+    return user
+
+我很少使用 CRITICAL 。当一些特别糟糕的事情发生时，你可以使用这个级别来记录。
+比方说，内存耗尽，磁盘满了或者核危机（希望永远别发生 :S）。
+
+使用 __name__ 作为 logger 的名称
+
+虽然不是非得将 logger 的名称设置为 __name__ ，但是这样做会给我们带来诸多益处。
+在 python 中，变量 __name__ 的名称就是当前模块的名称。
+比如，在模块 “foo.bar.my_module” 中调用 logger.getLogger(__name__) 等价于调用logger.getLogger(“foo.bar.my_module”) 。
+当你需要配置 logger 时，你可以配置到 “foo” 中，这样包 foo 中的所有模块都会使用相同的配置。
+当你在读日志文件的时候，你就能够明白消息到底来自于哪一个模块。
+
+捕捉异常并使用 traceback 记录它
+
+出问题的时候记录下来是个好习惯，但是如果没有 traceback ，那么它一点儿用也没有。
+你应该捕获异常并用 traceback 把它们记录下来。比如下面这个例子：
+
+try:
+    open('/path/to/does/not/exist', 'rb')
+except (SystemExit, KeyboardInterrupt):
+    raise
+except Exception, e:
+    logger.error('Failed to open file', exc_info=True)
+
+使用参数 exc_info=true 调用 logger 方法, traceback 会输出到 logger 中。你可以看到下面的结果：
+
+ERROR:__main__:Failed to open file
+Traceback (most recent call last):
+  File "example.py", line 6, in <module>
+    open('/path/to/does/not/exist', 'rb')
+IOError: [Errno 2] No such file or directory: '/path/to/does/not/exist'
+
+你也可以调用 logger.exception(msg, _args)，它等价于 logger.error(msg, exc_info=True, _args)。
+
+千万不要在模块层次获取 Logger，除非 disable_existing_loggers 被设置为 False
+
+你可以看到很多在模块层次获取 logger 的例子（在这篇文章我也使用了很多，但这仅仅为了让示例更短一些）。
+它们看上去没什么坏处，但事实上，这儿是有陷阱的 – 如果你像这样在模块中使用 Logger，Python 会保留从文件中读入配置前
+所有创建的所有 logger。
+
+my_module.py
+
+import logging
+
+logger = logging.getLogger(__name__)
+
+def foo():
+    logger.info('Hi, foo')
+
+class Bar(object):
+    def bar(self):
+        logger.info('Hi, bar')
+
+main.py
+
+import logging
+
+logger = logging.getLogger(__name__)
+
+def foo():
+    logger.info('Hi, foo')
+
+class Bar(object):
+    def bar(self):
+        logger.info('Hi, bar')
+
+logging.ini
+
+[loggers]
+keys=root
+
+[handlers]
+keys=consoleHandler
+
+[formatters]
+keys=simpleFormatter
+
+[logger_root]
+level=DEBUG
+handlers=consoleHandler
+
+[handler_consoleHandler]
+class=StreamHandler
+level=DEBUG
+formatter=simpleFormatter
+args=(sys.stdout,)
+
+[formatter_simpleFormatter]
+format=%(asctime)s - %(name)s - %(levelname)s - %(message)s
+datefmt=
+
+本应该在日志中看到记录，但是你却什么也没有看到。为什么呢？这就是因为你在模块层次创建了 logger，
+然后你又在加载日志配置文件之前就导入了模块。logging.fileConfig 与 logging.dictConfig 默认情况下会使得已经存在的 logger 失效。
+所以，这些配置信息不会应用到你的 Logger 上。你最好只在你需要 logger 的时候才获得它。反正创建或者取得 logger 的成本很低。
+你可以这样写你的代码：
+
+import logging
+
+def foo():
+    logger = logging.getLogger(__name__)
+    logger.info('Hi, foo')
+
+class Bar(object):
+    def __init__(self, logger=None):
+        self.logger = logger or logging.getLogger(__name__)
+
+    def bar(self):
+        self.logger.info('Hi, bar')
+
+这样，logger 就会在你加载配置后才会被创建。这样配置信息就可以正常应用。
+
+python2.7 之后的版本中 fileConfg 与 dictConfig 都新添加了 “disable_existing_loggers” 参数，将其设置为 False，
+上面提到的问题就可以解决了。例如：
+
+import logging
+import logging.config
+
+logger = logging.getLogger(__name__)
+
+# load config from file
+
+# logging.config.fileConfig('logging.ini', disable_existing_loggers=False)
+
+# or, for dictConfig
+
+logging.config.dictConfig({
+    'version': 1,
+    'disable_existing_loggers': False,  # this fixes the problem
+
+    'formatters': {
+        'standard': {
+            'format': '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+        },
+    },
+    'handlers': {
+        'default': {
+            'level':'INFO',
+            'class':'logging.StreamHandler',
+        },
+    },
+    'loggers': {
+        '': {
+            'handlers': ['default'],
+            'level': 'INFO',
+            'propagate': True
+        }
+    }
+})
+
+logger.info('It works!')
+
+使用 JSON 或者 YAML 记录配置
+
+虽然你可以在 python 代码中配置你的日志系统，但是这样并不够灵活。最好的方法是使用一个配置文件来配置。
+在 Python2.7 及之后的版本中，你可以从字典中加载 logging 配置。这也就意味着你可以从 JSON 或者 YAML 文件中加载日志的配置。
+尽管你还能用原来 .ini 文件来配置，但是它既很难读也很难写。下面我给你们看一个用 JSON 和 YAML 文件配置的例子:
+
+logging.json
+
+{
+    "version": 1,
+    "disable_existing_loggers": false,
+    "formatters": {
+        "simple": {
+            "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        }
+    },
+
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "level": "DEBUG",
+            "formatter": "simple",
+            "stream": "ext://sys.stdout"
+        },
+
+        "info_file_handler": {
+            "class": "logging.handlers.RotatingFileHandler",
+            "level": "INFO",
+            "formatter": "simple",
+            "filename": "info.log",
+            "maxBytes": 10485760,
+            "backupCount": 20,
+            "encoding": "utf8"
+        },
+
+        "error_file_handler": {
+            "class": "logging.handlers.RotatingFileHandler",
+            "level": "ERROR",
+            "formatter": "simple",
+            "filename": "errors.log",
+            "maxBytes": 10485760,
+            "backupCount": 20,
+            "encoding": "utf8"
+        }
+    },
+
+    "loggers": {
+        "my_module": {
+            "level": "ERROR",
+            "handlers": ["console"],
+            "propagate": "no"
+        }
+    },
+
+    "root": {
+        "level": "INFO",
+        "handlers": ["console", "info_file_handler", "error_file_handler"]
+    }
+}
+
+logging.yaml
+
+version: 1
+
+disable_existing_loggers: False
+
+formatters:
+
+    simple:
+
+        format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+handlers:
+
+    console:
+
+        class: logging.StreamHandler
+
+        level: DEBUG
+
+        formatter: simple
+
+        stream: ext://sys.stdout
+
+    info_file_handler:
+
+        class: logging.handlers.RotatingFileHandler
+
+        level: INFO
+
+        formatter: simple
+
+        filename: info.log
+
+        maxBytes: 10485760 # 10MB
+
+        backupCount: 20
+
+        encoding: utf8
+
+    error_file_handler:
+
+        class: logging.handlers.RotatingFileHandler
+
+        level: ERROR
+
+        formatter: simple
+
+        filename: errors.log
+
+        maxBytes: 10485760 # 10MB
+
+        backupCount: 20
+
+        encoding: utf8
+
+loggers:
+
+    my_module:
+
+        level: ERROR
+
+        handlers: [console]
+
+        propagate: no
+
+root:
+
+    level: INFO
+
+    handlers: [console, info_file_handler, error_file_handler]
+
+...
+
+接下来将展示怎样从 JSON 文件中读入日志的配置信息：
+
+import json
+import logging.config
+
+def setup_logging(
+    default_path='logging.json',
+    default_level=logging.INFO,
+    env_key='LOG_CFG'
+):
+    """Setup logging configuration
+
+    """
+    path = default_path
+    value = os.getenv(env_key, None)
+    if value:
+        path = value
+    if os.path.exists(path):
+        with open(path, 'rt') as f:
+            config = json.load(f)
+        logging.config.dictConfig(config)
+    else:
+        logging.basicConfig(level=default_level)
+
+使用 JSON 的一个优点就是 json是一个标准库，你不需要额外安装它。但是从我个人来说，我比较喜欢 YAML 一些。
+它无论是读起来还是写起来都比较容易。你也可以使用下面的方法来加载一个 YAML 配置文件：
+
+import os
+import logging.config
+
+import yaml
+
+def setup_logging(
+    default_path='logging.yaml',
+    default_level=logging.INFO,
+    env_key='LOG_CFG'
+):
+    """Setup logging configuration
+
+    """
+    path = default_path
+    value = os.getenv(env_key, None)
+    if value:
+        path = value
+    if os.path.exists(path):
+        with open(path, 'rt') as f:
+            config = yaml.load(f.read())
+        logging.config.dictConfig(config)
+    else:
+        lo
+
+接下来，你就可以在运行程序的时候调用 setup_logging 来启动日志记录了。它默认会读取 logging.json 或 logging.yaml 文件 。
+你也可以设置环境变量 LOG_CCFG 从指定路径加载日志配置。例如：
+
+LOG_CFG=my_logging.json python my_server.py
+
+如果你喜欢 YAML：
+
+LOG_CFG=my_logging.yaml python my_server.py
+
+使用旋转文件句柄
+
+如果你用 FileHandler 写日志，文件的大小会随着时间推移而不断增大。最终有一天它会占满你所有的磁盘空间。
+为了避免这种情况出现，你可以在你的生成环境中使用 RotatingFileHandler 替代 FileHandler。
+
+如果你有多个服务器可以启用一个专用的日志服务器
+
+当你有多个服务器和不同的日志文件时，你可以创建一个集中式的日志系统来收集重要的（大多数情况是警告或者错误消息）信息。
+然后通过监测这些日志信息，你就可以很容易地发现系统中的问题了。
+
+总结
+
+Python 的日志库设计得如此之好，真是让人欣慰，我觉得这是标准库中最好的一部分了，你不得不选择它。它很灵活，
+你可以用你自己的 handler 或者 filter。已经有很多的第三方的 handler 了，比如 pyzmq 提供的 ZeroMQ 日志句柄，
+它允许你通过 zmq 套接字发送日志消息。如果你还不知道怎么正确的使用日志系统，这篇文章将会非常有用。
+有了很好的日志记录实践，你就能非常容易地发现系统中的问题。这是很非常值得投资的。:)
