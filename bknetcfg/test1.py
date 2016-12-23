@@ -97,4 +97,3 @@ if __name__ == '__main__':
     hosts=[['host1','192.168.99.99','root','123456',"#"],['host2','192.168.99.200','lz','123',"$"]]
     cmds=['ls -l','mount']
     auto_task_telnet_linux(hosts,cmds)
-    #
