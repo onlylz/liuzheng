@@ -1,7 +1,7 @@
-import mylogging
+from mylogging import setup_logging
 import logging
 
-mylogging.setup_logging()
+setup_logging()
 #logger = logging.getLogger(__name__)
 logger = logging.getLogger()
 
