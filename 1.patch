@@ -1,0 +1,1434 @@
+Index: bknetcfg/mylogging.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- bknetcfg/mylogging.py	(revision )
++++ bknetcfg/mylogging.py	(revision )
+@@ -0,0 +1,22 @@
++import json
++import logging
++import logging.config
++import os
++
++
++def setup_logging(
++        default_path = 'mylogging.json',
++        default_level = logging.DEBUG,
++        env_key = 'LOG_CFG'):
++
++    """Setup logging configuration"""
++    path = default_path
++    value = os.getenv(env_key, None)
++    if value:
++        path = value
++    if os.path.exists(path):
++        with open(path, 'rt') as f:
++            config = json.load(f)
++        logging.config.dictConfig(config)
++    else:
++        logging.basicConfig(level=default_level)
+Index: bknetcfg/log/errors.log
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- bknetcfg/log/errors.log	(revision )
++++ bknetcfg/log/errors.log	(revision )
+@@ -0,0 +1,2 @@
++2016-12-27 19:25:28,586 - __main__ - ERROR - Can not connect to 高新交换2(192.90.108.252)!
++2016-12-27 19:25:28,587 - __main__ - ERROR - Backup 高新交换2(192.90.108.252)'s config failure!
+Index: bknetcfg/bknetcfg.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- bknetcfg/bknetcfg.py	(revision 84d984b1899e8d6451a115b517ec31fa60825df7)
++++ bknetcfg/bknetcfg.py	(revision )
+@@ -1,58 +1,261 @@
+-# coding: utf8
++#!/usr/local/bin/python
++# encoding=utf-8
++
+ import sys
++import datetime
+ import telnetlib
+-import time
++from ftplib import FTP
+ import pymysql
+-import os
+-import shutil
+ import logging
+-import paramiko
++from mylogging import setup_logging
+ 
+-def bk_telnet_h3c_1(name, ip, area):
+-    host = {}
+-    host['name'] = name.encode(encoding="utf-8")
+-    host['ip'] = ip.encode(encoding="utf-8")
+-    host['user'] = b"liuzheng"
+-    host['password'] = b"jjyhncfh"
+-    host['tftp'] = b"tftp 99.99.11.11 put startup.cfg config.txt"
++FTP_SERVER = {'ip': '192.90.33.235',
++              'port': 21,
++              'user': 'bknetcfg',
++              'passwd': 'bknetcfg',
++              'bak_dir': '/'}
++
++DB_SERVER = {'host': '192.90.33.212',
++             'port': 3306,
++             'user': 'chknet',
++             'password': 'chknet',
++             'db': 'chknet',
++             'charset': 'utf8mb4',
++             'cursorclass': pymysql.cursors.DictCursor}
++
++
++def mk_bak_dir_on_ftp(ftp_server, bak_dir):
++    #print(sys._getframe().f_code.co_name)
++
++    logger.info("Begin to create directory on FTP server for backup...")
++    ftp = FTP()
+     try:
+-        tn = telnetlib.Telnet(host['ip'])
++        ftp.connect(ftp_server['ip'], ftp_server['port'])
++    except:
++        logger.error("Can not connect FTP server " + ftp_server['ip'] + "!")
++        exit(3)
++    try:
++        ftp.login(ftp_server['user'], ftp_server['passwd'])
++    except:
++        logger.error("Can not login FTP server " + ftp_server['ip'] + "!")
++        exit(3)
++
++    try:
++        ftp.mkd(bak_dir)
++    except:
++        logger.error("Can not create directory " + bak_dir + " on FTP server " + ftp_server['ip'] + "!")
++        ftp.quit()
++        exit(3)
++    logger.info("Create directory " + bak_dir + " on FTP server " + ftp_server['ip'] + " success!")
++    ftp.quit()
++    return
++
++def get_devices(db_server):
++    #print(sys._getframe().f_code.co_name)
++    logger.info("Begin to get network device's parameter from DB server...")
++    try:
++        conn = pymysql.connect(**db_server)
++    except:
++        logger.error("Can not connect to DB server " + DB_SERVER['host'] + "!")
++    result=[]
++    try:
++        with conn.cursor() as cursor:
++            sql = 'SELECT vendor, sw_ver, name, hostname, ipaddr, user, passwd, supasswd FROM cn_device WHERE bak_cfg = % s ORDER BY hostname'
++            cursor.execute(sql, '1')
++            result = cursor.fetchall()
++
++        # 没有设置默认自动提交，需要主动提交，以保存所执行的语句
++        #conn.commit()
++        #
++    except:
++        logger.error("Can not get network device's parameter from DB server!")
++    finally:
++        conn.close()
++        logger.info("Get " + str(len(result)) + " network device's parameter from DB server.")
++        return result
++
++def bak_H3C_Sv5_cfg(device, ftp_server):
++    #适用于S3100、S3100v2
++    #print(sys._getframe().f_code.co_name)
++    logger.info("Begin to backup " + device['name'] + "(" + device['ipaddr'] + ")'s config ...")
++    try:
++        tn = telnetlib.Telnet(device['ipaddr'])
+         tn.set_debuglevel(2)
++    except:
++        logger.error("Can not connect to " + device['name'] + "(" + device['ipaddr'] + ")!")
++        logger.error("Backup " + device['name'] + "(" + device['ipaddr'] + ")'s config failure!")
++        return 0
++
+-        try:
++    try:
+-            tn.read_until(b"(?i)Psername:", timeout=10)
+-        except EOFError:
+-            logging.error("time out")
+-        tn.write(host['user']+b"\n")
+-        tn.read_until(b"Password:", timeout=2)
+-        tn.write(host['password']+b"\n")
+-        tn.read_until(b">", timeout=2)
+-        tn.write(host['tftp']+b"\n")
+-        tn.read_until(b"successfully", timeout=6)
+-        # movefile_txt(name, ip, area)
+-    except TimeoutError:
+-        logging.warning(name + "(" + ip + ") TimeoutError: [WinError 10060] 由于连接方在一段时间后没有正确答复或连接的主机没有反应，连接尝试失败。")
+-    except FileNotFoundError:
+-        logging.error(name + "(" + ip + ") FileNotFoundError: 未成功备份startup.cfg！")
+-    except ConnectionResetError:
+-        logging.warning(name + "(" + ip + ") ConnectionResetError: [WinError 10054] 远程主机强迫关闭了一个现有的连接。")
++        tn.read_until(b"Username:")
++        tn.write(device['user'].encode('utf-8') + b"\n")
++        tn.read_until(b"Password:")
++        tn.write(device['passwd'].encode('utf-8') + b"\n")
++        tn.read_until(b">")
++        tn.write(b"su \n")
++        tn.read_until(b"Password:")
++        tn.write(device['supasswd'].encode('utf-8') + b"\n")
++        tn.read_until(b">")
++        tn.write(b"ftp " + ftp_server['ip'].encode('utf-8') + b"\n")
++        tn.read_until(b"):")
++        tn.write(ftp_server['user'].encode('utf-8') + b"\n")
++        tn.read_until(b"Password:")
++        tn.write(ftp_server['passwd'].encode('utf-8') + b"\n")
++        tn.read_until(b"[ftp]")
++        tn.write(b"cd " + ftp_server['bak_dir'].encode('utf-8') + b"\n")
++        tn.read_until(b"[ftp]")
++        tn.write(b"put config.cfg " + device['hostname'].encode('utf-8') + b".cfg\n")
++        tn.read_until(b"[ftp]")
++        tn.write(b"quit\n")
++        tn.read_until(b">")
++        tn.write(b"quit\n")
++        tn.close()
++        logger.info("Backup " + device['name'] + "(" + device['ipaddr'] + ")'s config successful.")
++        return 1
+     except:
+-        logging.error(name + "(" + ip + ") 发生未知错误！")
++        logger.error("Encounter errors when backuping " + device['name'])
++        logger.error("Backup " + device['name'] + "(" + device['ipaddr'] + ")'s config failure!")
++        return 0
+ 
++def bak_H3C_Rv5_cfg(device, ftp_server):
++    #适用S7507、R20XX、R30XX
++    #print(sys._getframe().f_code.co_name)
+ 
+-file_year = time.strftime("%Y", time.localtime())
+-file_mon = time.strftime("%m", time.localtime())
+-file_mday = time.strftime("%d", time.localtime())
+-file_time = time.strftime("%Y%m%d", time.localtime())
+-backup_dir = os.getcwd() + "\\备份路径\\"
+-tftp_dir = os.getcwd() + "\\TFTP\\Root\\"
+-logging_dir = os.getcwd() + "\\备份路径\\备份程序执行日志"
+-logging_name = "log_" + file_time + ".txt"
+-if not os.path.isdir(logging_dir):
+-    os.makedirs(logging_dir)
+-logging.basicConfig(filename = os.path.join(logging_dir, logging_name), level = logging.INFO, filemode = "a", format = "%(asctime)s - %(levelname)s: %(message)s")
+-#logging.debug("debug")
+-#logging.info("info")
+-#logging.warning("warn")
+-#logging.error("error")
+-bk_telnet_h3c_1("11F","99.99.11.1","11")
+-logging.shutdown()
+\ No newline at end of file
++    logger.info("Begin to backup " + device['name'] + "(" + device['ipaddr'] + ")'s config ...")
++    try:
++        tn = telnetlib.Telnet(device['ipaddr'])
++        tn.set_debuglevel(2)
++    except:
++        logger.error("Can not connect to " + device['name'] + "(" + device['ipaddr'] + ")!")
++        logger.error("Backup " + device['name'] + "(" + device['ipaddr'] + ")'s config failure!")
++        return 0
++
++    try:
++        tn.read_until(b"Username:")
++        tn.write(device['user'].encode('utf-8') + b"\n")
++        tn.read_until(b"Password:")
++        tn.write(device['passwd'].encode('utf-8') + b"\n")
++        tn.read_until(b">")
++        tn.write(b"su \n")
++        tn.read_until(b"Password:")
++        tn.write(device['supasswd'].encode('utf-8') + b"\n")
++        tn.read_until(b">")
++        tn.write(b"ftp " + ftp_server['ip'].encode('utf-8') + b"\n")
++        tn.read_until(b"):")
++        tn.write(ftp_server['user'].encode('utf-8') + b"\n")
++        tn.read_until(b"Password:")
++        tn.write(ftp_server['passwd'].encode('utf-8') + b"\n")
++        tn.read_until(b"[ftp]")
++        tn.write(b"cd " + ftp_server['bak_dir'].encode('utf-8') + b"\n")
++        tn.read_until(b"[ftp]")
++        tn.write(b"put startup.cfg " + device['hostname'].encode('utf-8') + b".cfg\n")
++        tn.read_until(b"[ftp]")
++        tn.write(b"quit\n")
++        tn.read_until(b">")
++        tn.write(b"quit\n")
++        tn.close()
++        logger.info("Backup " + device['name'] + "(" + device['ipaddr'] + ")'s config successful.")
++        return 1
++    except:
++        logger.error("Encounter error when backuping " + device['name'])
++        logger.error("Backup " + device['name'] + "(" + device['ipaddr'] + ")'s config failure!")
++        return 0
++
++def bak_H3C_Rv7_cfg(device, ftp_server):
++    # 适用3600-28、3600-51
++    #print(sys._getframe().f_code.co_name)
++
++    logger.info("Begin to backup " + device['name'] + "(" + device['ipaddr'] + ")'s config ...")
++    try:
++        tn = telnetlib.Telnet(device['ipaddr'])
++        tn.set_debuglevel(2)
++    except:
++        logger.error("Can not connect to " + device['name'] + "(" + device['ipaddr'] + ")!")
++        logger.error("Backup " + device['name'] + "(" + device['ipaddr'] + ")'s config failure!")
++        return 0
++
++    try:
++        tn.read_until(b"login:")
++        tn.write(device['user'].encode('utf-8') + b"\n")
++        tn.read_until(b"Password:")
++        tn.write(device['passwd'].encode('utf-8') + b"\n")
++        tn.read_until(b">")
++        tn.write(b"su \n")
++        tn.read_until(b"Password:")
++        tn.write(device['supasswd'].encode('utf-8') + b"\n")
++        tn.read_until(b">")
++        tn.write(b"ftp " + ftp_server['ip'].encode('utf-8') + b"\n")
++        tn.read_until(b"):")
++        tn.write(ftp_server['user'].encode('utf-8') + b"\n")
++        tn.read_until(b"Password:")
++        tn.write(ftp_server['passwd'].encode('utf-8') + b"\n")
++        tn.read_until(b"ftp>")
++        tn.write(b"cd " + ftp_server['bak_dir'].encode('utf-8') + b"\n")
++        tn.read_until(b"ftp>")
++        tn.write(b"put startup.cfg " + device['hostname'].encode('utf-8') + b".cfg\n")
++        tn.read_until(b"ftp>")
++        tn.write(b"quit\n")
++        tn.read_until(b">")
++        tn.write(b"quit\n")
++        tn.close()
++        logger.info("Backup " + device['name'] + "(" + device['ipaddr'] + ")'s config successful.")
++        return 1
++    except:
++        logger.error("Encounter error when backuping " + device['name'])
++        logger.error("Backup " + device['name'] + "(" + device['ipaddr'] + ")'s config failure!")
++        return 0
++
++def bak_CSC_v12_cfg(device, ftp_server):
++    # 适用3800,2900
++    #print(sys._getframe().f_code.co_name)
++
++    logger.info("Begin to backup " + device['name'] + "(" + device['ipaddr'] + ")'s config ...")
++    try:
++        tn = telnetlib.Telnet(device['ipaddr'])
++        tn.set_debuglevel(2)
++    except:
++        logger.error("Can not connect to " + device['name'] + "(" + device['ipaddr'] + "）!")
++        logger.error("Backup " + device['name'] + "(" + device['ipaddr'] + ")'s config failure!")
++        return 0
++
++    try:
++        tn.read_until(b"Username:")
++        tn.write(device['user'].encode('utf-8') + b"\n")
++        tn.read_until(b"Password:")
++        tn.write(device['passwd'].encode('utf-8') + b"\n")
++        tn.read_until(b">")
++        tn.write(b"en\n")
++        tn.read_until(b"Password:")
++        tn.write(device['supasswd'].encode('utf-8') + b"\n")
++        tn.read_until(b"#")
++        tn.write(b"copy start ftp\n")
++        tn.read_until(b"]?")
++        tn.write(ftp_server['ip'].encode('utf-8') + b"\n")
++        tn.read_until(b"]?")
++        tn.write(ftp_server['bak_dir'].encode('utf-8') +b"/" + device['hostname'].encode('utf-8') + b".cfg\n")
++        tn.read_until(b"#")
++        tn.write(b"exit\n")
++        tn.close()
++        logger.info("Backup " + device['name'] + "(" + device['ipaddr'] + ")'s config successful.")
++        return 1
++    except:
++        logger.error("Encounter error when backuping " + device['name'])
++        logger.error("Backup " + device['name'] + "(" + device['ipaddr'] + ")'s config failure!")
++        return 0
++
++
++
++if __name__ == '__main__':
++
++    setup_logging()
++    logger = logging.getLogger(__name__)
++    bat_no = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
++    logger.info("***Begin to backup network device's config to FTP...")
++    ftp_server = mk_bak_dir_on_ftp(FTP_SERVER, bat_no)
++    FTP_SERVER['bak_dir'] = bat_no
++    devices = get_devices(DB_SERVER)
++    backed_devices = 0
++    for device in devices:
++        backed_devices = backed_devices + eval("bak_" + device['vendor'] + "_" + device['sw_ver'] + "_cfg")(device, FTP_SERVER)
++    logger.info("There are " + str(backed_devices) + " of " + str(len(devices)) + " devices backuped to ftp://" + \
++          FTP_SERVER['ip'] + '/' + FTP_SERVER['bak_dir'] + ".")
+Index: bknetcfg/test2.py
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- bknetcfg/test2.py	(revision 84d984b1899e8d6451a115b517ec31fa60825df7)
++++ bknetcfg/test2.py	(revision )
+@@ -10,7 +10,7 @@
+               'port': 21,
+               'user': 'bknetcfg',
+               'passwd': 'bknetcfg',
+-              'bak_dir': ''}
++              'bak_dir': '/'}
+ 
+ DB_SERVER = {'host': '192.90.33.212',
+              'port': 3306,
+@@ -21,8 +21,6 @@
+              'cursorclass': pymysql.cursors.DictCursor}
+ 
+ 
+-
+-
+ def mk_bak_dir_on_ftp(ftp_server, bak_dir):
+     print(sys._getframe().f_code.co_name)
+ 
+@@ -33,7 +31,7 @@
+         print("Can not connect server " + ftp_server['ip'] + "!")
+         exit(3)
+     try:
+-        ftp.login(ftp_server['user'],ftp_server['passwd'])
++        ftp.login(ftp_server['user'], ftp_server['passwd'])
+     except:
+         print("Can not login server " + ftp_server['ip'] + "!")
+         exit(3)
+@@ -45,20 +43,21 @@
+         ftp.quit()
+         exit(3)
+     print(ftp.dir())
+-    print("Create directory " + ftp_server + " on server " + ftp_server['ip'] + "success!")
++    print("Create directory " + bak_dir + " on server " + ftp_server['ip'] + " success!")
+     ftp.quit()
+ 
+     return
+ 
+-
+ def get_devices(db_server):
+     print(sys._getframe().f_code.co_name)
+ 
+     conn = pymysql.connect(**db_server)
+     try:
+         with conn.cursor() as cursor:
+-            sql = 'SELECT vendor, type, name, ipaddr, user, passwd, supasswd FROM cn_device'
+-            cursor.execute(sql)
++            # sql = 'SELECT vendor, sw_ver, name, ipaddr, user, passwd, supasswd FROM cn_device'
++            # cursor.execute(sql)
++            sql = 'SELECT vendor, sw_ver, name, hostname, ipaddr, user, passwd, supasswd FROM cn_device WHERE bak_cfg = % s ORDER BY hostname'
++            cursor.execute(sql, '1')
+             result = cursor.fetchall()
+ 
+         # 没有设置默认自动提交，需要主动提交，以保存所执行的语句
+@@ -67,53 +66,187 @@
+         conn.close()
+         return result
+ 
+-def bak_csc_r38_cfg(device, ftp_server):
+-    print("bak_csc_r38_cfg: " + device['name'], device['ipaddr'], device['user'], device['passwd'], device['supasswd'])
++def bak_H3C_Sv5_cfg(device, ftp_server):
++    #适用于S3100、S3100v2
++    print(sys._getframe().f_code.co_name)
++    print("Begin to backup " + device['name'] + "(" + device['ipaddr'] + ")'s config ...")
++    try:
++        tn = telnetlib.Telnet(device['ipaddr'])
++        tn.set_debuglevel(2)
++    except:
++        print(device['name'] + "(" + device['ipaddr'] + "）无法连接")
++        print("Backup " + device['name'] + "(" + device['ipaddr'] + ")'s config failure")
++        return 0
+ 
+-def bak_h3c_s75_cfg(device, ftp_server):
+-    print("bak_h3c_s75_cfg: " + device['name'], device['ipaddr'], device['user'], device['passwd'], device['supasswd'])
++    try:
++        tn.read_until(b"Username:")
++        tn.write(device['user'].encode('utf-8') + b"\n")
++        tn.read_until(b"Password:")
++        tn.write(device['passwd'].encode('utf-8') + b"\n")
++        tn.read_until(b">")
++        tn.write(b"su \n")
++        tn.read_until(b"Password:")
++        tn.write(device['supasswd'].encode('utf-8') + b"\n")
++        tn.read_until(b">")
++        tn.write(b"ftp " + ftp_server['ip'].encode('utf-8') + b"\n")
++        tn.read_until(b"):")
++        tn.write(ftp_server['user'].encode('utf-8') + b"\n")
++        tn.read_until(b"Password:")
++        tn.write(ftp_server['passwd'].encode('utf-8') + b"\n")
++        tn.read_until(b"[ftp]")
++        tn.write(b"cd " + ftp_server['bak_dir'].encode('utf-8') + b"\n")
++        tn.read_until(b"[ftp]")
++        tn.write(b"put config.cfg " + device['hostname'].encode('utf-8') + b".cfg\n")
++        tn.read_until(b"[ftp]")
++        tn.write(b"quit\n")
++        tn.read_until(b">")
++        tn.write(b"quit\n")
++        tn.close()
++        print("Backup " + device['name'] + "(" + device['ipaddr'] + ")'s config successful.")
++        return 1
++    except:
++        print("Encounter error when backuping " + device['name'])
++        print("Backup " + device['name'] + "(" + device['ipaddr'] + ")'s config failure")
++        return 0
+ 
+-def bak_h3c_s31_cfg(device, ftp_server):
+-    print("Begin to backup " + device['name'] + "(" + device['ipaddr'] + ")'s config to ftp://" \
+-          + ftp_server['ip'] + '/' + ftp_server['bak_dir'] + '...')
++def bak_H3C_Rv5_cfg(device, ftp_server):
++    #适用S7507、R20XX、R30XX
++    print(sys._getframe().f_code.co_name)
++
++    print("Begin to backup " + device['name'] + "(" + device['ipaddr'] + ")'s config ...")
+     try:
+-        tn = telnetlib.Telnet(device['ip'])
++        tn = telnetlib.Telnet(device['ipaddr'])
+         tn.set_debuglevel(2)
++    except:
++        print(device['name'] + "(" + device['ipaddr'] + "）无法连接")
++        print("Backup " + device['name'] + "(" + device['ipaddr'] + ")'s config failure")
++        return 0
++
+-        try:
++    try:
+-            tn.read_until(b"(?i)Username:", timeout=10)
+-        except EOFError:
+-            print("time out")
+-        tn.write(device['user']+b"\n")
+-        tn.read_until(b"Password:", timeout=2)
+-        tn.write(device['passwd']+b"\n")
+-        tn.read_until(b">", timeout=2)
+-        #tn.write(host['tftp']+b"\n")
+-        #tn.read_until(b"successfully", timeout=6)
+-        # movefile_txt(name, ip, area)
+-    except TimeoutError:
+-        print(device['name'] + "(" + device['ip'] + ") TimeoutError: [WinError 10060] 由于连接方在一段时间后没有正确答复或连接的主机没有反应，连接尝试失败。")
+-    except FileNotFoundError:
+-        print(device['name'] + "(" + device['ip'] + ") FileNotFoundError: 未成功备份startup.cfg！")
+-    except ConnectionResetError:
+-        print(device['name'] + "(" + device['ip'] + ") ConnectionResetError: [WinError 10054] 远程主机强迫关闭了一个现有的连接。")
++        tn.read_until(b"Username:")
++        tn.write(device['user'].encode('utf-8') + b"\n")
++        tn.read_until(b"Password:")
++        tn.write(device['passwd'].encode('utf-8') + b"\n")
++        tn.read_until(b">")
++        tn.write(b"su \n")
++        tn.read_until(b"Password:")
++        tn.write(device['supasswd'].encode('utf-8') + b"\n")
++        tn.read_until(b">")
++        tn.write(b"ftp " + ftp_server['ip'].encode('utf-8') + b"\n")
++        tn.read_until(b"):")
++        tn.write(ftp_server['user'].encode('utf-8') + b"\n")
++        tn.read_until(b"Password:")
++        tn.write(ftp_server['passwd'].encode('utf-8') + b"\n")
++        tn.read_until(b"[ftp]")
++        tn.write(b"cd " + ftp_server['bak_dir'].encode('utf-8') + b"\n")
++        tn.read_until(b"[ftp]")
++        tn.write(b"put startup.cfg " + device['hostname'].encode('utf-8') + b".cfg\n")
++        tn.read_until(b"[ftp]")
++        tn.write(b"quit\n")
++        tn.read_until(b">")
++        tn.write(b"quit\n")
++        tn.close()
++        print("Backup " + device['name'] + "(" + device['ipaddr'] + ")'s config successful.")
++        return 1
+     except:
+-        print(device['name'] + "(" + device['ip'] + ") 发生未知错误！")
++        print("Encounter error when backuping " + device['name'])
++        print("Backup " + device['name'] + "(" + device['ipaddr'] + ")'s config failure")
++        return 0
+ 
+-    print("Backup " + device['name'] + "(" + device['ipaddr'] + ")'s config to ftp://" \
+-          + ftp_server['ip'] + '/' + ftp_server['bak_dir'] + 'successful.')
+-'''def bak_dev_cfg(device):
+-    print(device['vendor'], device['type'], device['name'], device['ipaddr'], device['user'], device['passwd'], device['supasswd'])
+-    #eval("bak_" + device['vendor'] + "_" + device['type'] + "_cfg")\
+-    # (device['name'], device['ipaddr'], device['user'], device['passwd'], device['supasswd'])
+-    #eval("bak_" + device['vendor'] + "_" + device['type'] + "_cfg")(device)
+-'''
++def bak_H3C_Rv7_cfg(device, ftp_server):
++    # 适用3600-28、3600-51
++    print(sys._getframe().f_code.co_name)
++
++    print("Begin to backup " + device['name'] + "(" + device['ipaddr'] + ")'s config ...")
++    try:
++        tn = telnetlib.Telnet(device['ipaddr'])
++        tn.set_debuglevel(2)
++    except:
++        print(device['name'] + "(" + device['ipaddr'] + "）无法连接")
++        print("Backup " + device['name'] + "(" + device['ipaddr'] + ")'s config failure")
++        return 0
++
++    try:
++        tn.read_until(b"login:")
++        tn.write(device['user'].encode('utf-8') + b"\n")
++        tn.read_until(b"Password:")
++        tn.write(device['passwd'].encode('utf-8') + b"\n")
++        tn.read_until(b">")
++        tn.write(b"su \n")
++        tn.read_until(b"Password:")
++        tn.write(device['supasswd'].encode('utf-8') + b"\n")
++        tn.read_until(b">")
++        tn.write(b"ftp " + ftp_server['ip'].encode('utf-8') + b"\n")
++        tn.read_until(b"):")
++        tn.write(ftp_server['user'].encode('utf-8') + b"\n")
++        tn.read_until(b"Password:")
++        tn.write(ftp_server['passwd'].encode('utf-8') + b"\n")
++        tn.read_until(b"ftp>")
++        tn.write(b"cd " + ftp_server['bak_dir'].encode('utf-8') + b"\n")
++        tn.read_until(b"ftp>")
++        tn.write(b"put startup.cfg " + device['hostname'].encode('utf-8') + b".cfg\n")
++        tn.read_until(b"ftp>")
++        tn.write(b"quit\n")
++        tn.read_until(b">")
++        tn.write(b"quit\n")
++        tn.close()
++        print("Backup " + device['name'] + "(" + device['ipaddr'] + ")'s config successful.")
++        return 1
++    except:
++        print("Encounter error when backuping " + device['name'])
++        print("Backup " + device['name'] + "(" + device['ipaddr'] + ")'s config failure")
++        return 0
++
++def bak_CSC_v12_cfg(device, ftp_server):
++    # 适用3800,2900
++    print(sys._getframe().f_code.co_name)
++
++    print("Begin to backup " + device['name'] + "(" + device['ipaddr'] + ")'s config ...")
++    try:
++        tn = telnetlib.Telnet(device['ipaddr'])
++        tn.set_debuglevel(2)
++    except:
++        print(device['name'] + "(" + device['ipaddr'] + "）无法连接")
++        print("Backup " + device['name'] + "(" + device['ipaddr'] + ")'s config failure")
++        return 0
++
++    try:
++        tn.read_until(b"Username:")
++        tn.write(device['user'].encode('utf-8') + b"\n")
++        tn.read_until(b"Password:")
++        tn.write(device['passwd'].encode('utf-8') + b"\n")
++        tn.read_until(b">")
++        tn.write(b"en\n")
++        tn.read_until(b"Password:")
++        tn.write(device['supasswd'].encode('utf-8') + b"\n")
++        tn.read_until(b"#")
++        tn.write(b"copy start ftp\n")
++        tn.read_until(b"]?")
++        tn.write(ftp_server['ip'].encode('utf-8') + b"\n")
++        tn.read_until(b"]?")
++        tn.write(ftp_server['bak_dir'].encode('utf-8') +b"/" + device['hostname'].encode('utf-8') + b".cfg\n")
++        tn.read_until(b"#")
++        tn.write(b"exit\n")
++        tn.close()
++        print("Backup " + device['name'] + "(" + device['ipaddr'] + ")'s config successful.")
++        return 1
++    except:
++        print("Encounter error when backuping " + device['name'])
++        print("Backup " + device['name'] + "(" + device['ipaddr'] + ")'s config failure")
++        return 0
++
++
++
+ if __name__ == '__main__':
+ 
+     bat_no = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
+-
+-    #ftp_server = mk_ftp_dir(FTP_SERVER, bat_no)
++    print("***Begin to backup network device's config to FTP***")
++    ftp_server = mk_bak_dir_on_ftp(FTP_SERVER, bat_no)
+     FTP_SERVER['bak_dir'] = bat_no
+     devices = get_devices(DB_SERVER)
++    backed_devices = 0
+     for device in devices:
+-        #bak_dev_cfg(device)
++        # bak_dev_cfg(device)
+-        #eval("bak_" + device['vendor'] + "_" + device['type'] + "_cfg")(device,FTP_SERVER)
++        backed_devices = backed_devices + eval("bak_" + device['vendor'] + "_" + device['sw_ver'] + "_cfg")(device, FTP_SERVER)
++    print("There are " + str(backed_devices) + " of " + str(len(devices)) + " devices backuped to ftp://" + \
++          FTP_SERVER['ip'] + '/' + FTP_SERVER['bak_dir'] + ".")
+Index: bknetcfg/log/debug.log
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- bknetcfg/log/debug.log	(revision )
++++ bknetcfg/log/debug.log	(revision )
+@@ -0,0 +1,447 @@
++2016-12-27 19:24:26,537 - __main__ - INFO - ***Begin to backup network device's config to FTP...
++2016-12-27 19:24:26,537 - __main__ - INFO - Begin to create directory on FTP server for backup...
++2016-12-27 19:24:26,549 - __main__ - INFO - Create directory 20161227-192426 on FTP server 192.90.33.235 success!
++2016-12-27 19:24:26,550 - __main__ - INFO - Begin to get network device's parameter from DB server...
++2016-12-27 19:24:26,557 - __main__ - INFO - Get 81 network device's parameter from DB server.
++2016-12-27 19:24:26,558 - __main__ - INFO - Begin to backup 核心交换1(192.90.33.2)'s config ...
++2016-12-27 19:24:26,808 - __main__ - INFO - Backup 核心交换1(192.90.33.2)'s config successful.
++2016-12-27 19:24:26,808 - __main__ - INFO - Begin to backup 核心交换2(192.90.33.3)'s config ...
++2016-12-27 19:24:27,146 - __main__ - INFO - Backup 核心交换2(192.90.33.3)'s config successful.
++2016-12-27 19:24:27,147 - __main__ - INFO - Begin to backup 外联路由(192.90.254.65)'s config ...
++2016-12-27 19:24:27,436 - __main__ - INFO - Backup 外联路由(192.90.254.65)'s config successful.
++2016-12-27 19:24:27,436 - __main__ - INFO - Begin to backup 下联路由1(192.90.255.5)'s config ...
++2016-12-27 19:24:27,928 - __main__ - INFO - Backup 下联路由1(192.90.255.5)'s config successful.
++2016-12-27 19:24:27,929 - __main__ - INFO - Begin to backup 下联路由2(192.90.255.6)'s config ...
++2016-12-27 19:24:28,432 - __main__ - INFO - Backup 下联路由2(192.90.255.6)'s config successful.
++2016-12-27 19:24:28,432 - __main__ - INFO - Begin to backup 自助路由(192.90.254.97)'s config ...
++2016-12-27 19:24:28,715 - __main__ - INFO - Backup 自助路由(192.90.254.97)'s config successful.
++2016-12-27 19:24:28,715 - __main__ - INFO - Begin to backup 1楼交换1(192.90.33.11)'s config ...
++2016-12-27 19:24:29,690 - __main__ - INFO - Backup 1楼交换1(192.90.33.11)'s config successful.
++2016-12-27 19:24:29,690 - __main__ - INFO - Begin to backup 1楼交换2(192.90.33.12)'s config ...
++2016-12-27 19:24:30,644 - __main__ - INFO - Backup 1楼交换2(192.90.33.12)'s config successful.
++2016-12-27 19:24:30,644 - __main__ - INFO - Begin to backup 2楼交换1(192.90.33.21)'s config ...
++2016-12-27 19:24:31,139 - __main__ - INFO - Backup 2楼交换1(192.90.33.21)'s config successful.
++2016-12-27 19:24:31,139 - __main__ - INFO - Begin to backup 2楼交换2(192.90.33.22)'s config ...
++2016-12-27 19:24:31,492 - __main__ - INFO - Backup 2楼交换2(192.90.33.22)'s config successful.
++2016-12-27 19:24:31,492 - __main__ - INFO - Begin to backup 3楼交换(192.90.33.31)'s config ...
++2016-12-27 19:24:31,910 - __main__ - INFO - Backup 3楼交换(192.90.33.31)'s config successful.
++2016-12-27 19:24:31,910 - __main__ - INFO - Begin to backup 4楼交换(192.90.33.41)'s config ...
++2016-12-27 19:24:32,293 - __main__ - INFO - Backup 4楼交换(192.90.33.41)'s config successful.
++2016-12-27 19:24:32,294 - __main__ - INFO - Begin to backup 11楼交换(192.90.33.111)'s config ...
++2016-12-27 19:24:32,720 - __main__ - INFO - Backup 11楼交换(192.90.33.111)'s config successful.
++2016-12-27 19:24:32,721 - __main__ - INFO - Begin to backup 12楼交换(192.90.33.121)'s config ...
++2016-12-27 19:24:33,152 - __main__ - INFO - Backup 12楼交换(192.90.33.121)'s config successful.
++2016-12-27 19:24:33,153 - __main__ - INFO - Begin to backup 金库交换(192.90.33.151)'s config ...
++2016-12-27 19:24:34,146 - __main__ - INFO - Backup 金库交换(192.90.33.151)'s config successful.
++2016-12-27 19:24:34,147 - __main__ - INFO - Begin to backup 监控交换(192.90.33.141)'s config ...
++2016-12-27 19:24:35,169 - __main__ - INFO - Backup 监控交换(192.90.33.141)'s config successful.
++2016-12-27 19:24:35,169 - __main__ - INFO - Begin to backup 洪都社区(192.90.255.193)'s config ...
++2016-12-27 19:24:35,744 - __main__ - INFO - Backup 洪都社区(192.90.255.193)'s config successful.
++2016-12-27 19:24:35,745 - __main__ - INFO - Begin to backup 万科北社区(192.90.255.195)'s config ...
++2016-12-27 19:24:36,314 - __main__ - INFO - Backup 万科北社区(192.90.255.195)'s config successful.
++2016-12-27 19:24:36,315 - __main__ - INFO - Begin to backup 名门世家(192.90.255.197)'s config ...
++2016-12-27 19:24:36,944 - __main__ - INFO - Backup 名门世家(192.90.255.197)'s config successful.
++2016-12-27 19:24:36,944 - __main__ - INFO - Begin to backup 贤士花园(192.90.255.201)'s config ...
++2016-12-27 19:24:37,523 - __main__ - INFO - Backup 贤士花园(192.90.255.201)'s config successful.
++2016-12-27 19:24:37,524 - __main__ - INFO - Begin to backup 鹿璟名居(192.90.255.199)'s config ...
++2016-12-27 19:24:38,087 - __main__ - INFO - Backup 鹿璟名居(192.90.255.199)'s config successful.
++2016-12-27 19:24:38,088 - __main__ - INFO - Begin to backup 莱卡小镇(192.90.255.205)'s config ...
++2016-12-27 19:24:38,666 - __main__ - INFO - Backup 莱卡小镇(192.90.255.205)'s config successful.
++2016-12-27 19:24:38,667 - __main__ - INFO - Begin to backup 星加坡花园(192.90.255.203)'s config ...
++2016-12-27 19:24:39,236 - __main__ - INFO - Backup 星加坡花园(192.90.255.203)'s config successful.
++2016-12-27 19:24:39,237 - __main__ - INFO - Begin to backup 铁路八村(192.90.255.207)'s config ...
++2016-12-27 19:24:39,912 - __main__ - INFO - Backup 铁路八村(192.90.255.207)'s config successful.
++2016-12-27 19:24:39,912 - __main__ - INFO - Begin to backup 居住主题(192.90.255.209)'s config ...
++2016-12-27 19:24:40,489 - __main__ - INFO - Backup 居住主题(192.90.255.209)'s config successful.
++2016-12-27 19:24:40,490 - __main__ - INFO - Begin to backup 桃苑(192.90.255.217)'s config ...
++2016-12-27 19:24:41,231 - __main__ - INFO - Backup 桃苑(192.90.255.217)'s config successful.
++2016-12-27 19:24:41,231 - __main__ - INFO - Begin to backup 南钢(192.90.255.215)'s config ...
++2016-12-27 19:24:41,806 - __main__ - INFO - Backup 南钢(192.90.255.215)'s config successful.
++2016-12-27 19:24:41,807 - __main__ - INFO - Begin to backup 安义新河湾(192.90.255.213)'s config ...
++2016-12-27 19:24:42,406 - __main__ - INFO - Backup 安义新河湾(192.90.255.213)'s config successful.
++2016-12-27 19:24:42,407 - __main__ - INFO - Begin to backup 进贤新辉(192.90.255.211)'s config ...
++2016-12-27 19:24:43,017 - __main__ - INFO - Backup 进贤新辉(192.90.255.211)'s config successful.
++2016-12-27 19:24:43,017 - __main__ - INFO - Begin to backup 系马桩(192.90.255.219)'s config ...
++2016-12-27 19:24:43,602 - __main__ - INFO - Backup 系马桩(192.90.255.219)'s config successful.
++2016-12-27 19:24:43,603 - __main__ - INFO - Begin to backup 青云小镇(192.90.255.221)'s config ...
++2016-12-27 19:24:44,268 - __main__ - INFO - Backup 青云小镇(192.90.255.221)'s config successful.
++2016-12-27 19:24:44,268 - __main__ - INFO - Begin to backup 博览路(192.90.255.223)'s config ...
++2016-12-27 19:24:44,865 - __main__ - INFO - Backup 博览路(192.90.255.223)'s config successful.
++2016-12-27 19:24:44,866 - __main__ - INFO - Begin to backup 中山路(192.90.255.225)'s config ...
++2016-12-27 19:24:45,413 - __main__ - INFO - Backup 中山路(192.90.255.225)'s config successful.
++2016-12-27 19:24:45,413 - __main__ - INFO - Begin to backup 江大南路(192.90.255.227)'s config ...
++2016-12-27 19:24:45,962 - __main__ - INFO - Backup 江大南路(192.90.255.227)'s config successful.
++2016-12-27 19:24:45,963 - __main__ - INFO - Begin to backup 文教路(192.90.255.229)'s config ...
++2016-12-27 19:24:46,498 - __main__ - INFO - Backup 文教路(192.90.255.229)'s config successful.
++2016-12-27 19:24:46,499 - __main__ - INFO - Begin to backup 象南(192.90.255.231)'s config ...
++2016-12-27 19:24:47,038 - __main__ - INFO - Backup 象南(192.90.255.231)'s config successful.
++2016-12-27 19:24:47,039 - __main__ - INFO - Begin to backup 百瑞四季(192.90.252.2)'s config ...
++2016-12-27 19:24:47,385 - __main__ - INFO - Backup 百瑞四季(192.90.252.2)'s config successful.
++2016-12-27 19:24:47,385 - __main__ - INFO - Begin to backup 巨汇建材(192.90.252.90)'s config ...
++2016-12-27 19:24:47,759 - __main__ - INFO - Backup 巨汇建材(192.90.252.90)'s config successful.
++2016-12-27 19:24:47,760 - __main__ - INFO - Begin to backup 全季酒店(192.90.252.10)'s config ...
++2016-12-27 19:24:48,233 - __main__ - INFO - Backup 全季酒店(192.90.252.10)'s config successful.
++2016-12-27 19:24:48,234 - __main__ - INFO - Begin to backup 阳明路由1(192.90.255.149)'s config ...
++2016-12-27 19:24:48,570 - __main__ - INFO - Backup 阳明路由1(192.90.255.149)'s config successful.
++2016-12-27 19:24:48,570 - __main__ - INFO - Begin to backup 阳明路由2(192.90.255.150)'s config ...
++2016-12-27 19:24:48,890 - __main__ - INFO - Backup 阳明路由2(192.90.255.150)'s config successful.
++2016-12-27 19:24:48,890 - __main__ - INFO - Begin to backup 阳明交换1(192.90.110.251)'s config ...
++2016-12-27 19:24:50,003 - __main__ - INFO - Backup 阳明交换1(192.90.110.251)'s config successful.
++2016-12-27 19:24:50,004 - __main__ - INFO - Begin to backup 阳明交换2(192.90.110.252)'s config ...
++2016-12-27 19:24:51,133 - __main__ - INFO - Backup 阳明交换2(192.90.110.252)'s config successful.
++2016-12-27 19:24:51,134 - __main__ - INFO - Begin to backup 仿古街(192.90.252.42)'s config ...
++2016-12-27 19:24:51,482 - __main__ - INFO - Backup 仿古街(192.90.252.42)'s config successful.
++2016-12-27 19:24:51,483 - __main__ - INFO - Begin to backup 洪城路由1(192.90.255.129)'s config ...
++2016-12-27 19:24:52,110 - __main__ - INFO - Backup 洪城路由1(192.90.255.129)'s config successful.
++2016-12-27 19:24:52,111 - __main__ - INFO - Begin to backup 洪城路由2(192.90.255.130)'s config ...
++2016-12-27 19:24:52,995 - __main__ - INFO - Backup 洪城路由2(192.90.255.130)'s config successful.
++2016-12-27 19:24:52,996 - __main__ - INFO - Begin to backup 汇景酒店(192.90.252.106)'s config ...
++2016-12-27 19:24:53,331 - __main__ - INFO - Backup 汇景酒店(192.90.252.106)'s config successful.
++2016-12-27 19:24:53,331 - __main__ - INFO - Begin to backup 悦蓝山(192.90.252.50)'s config ...
++2016-12-27 19:24:53,721 - __main__ - INFO - Backup 悦蓝山(192.90.252.50)'s config successful.
++2016-12-27 19:24:53,722 - __main__ - INFO - Begin to backup 南昌县医院(192.90.252.34)'s config ...
++2016-12-27 19:24:54,033 - __main__ - INFO - Backup 南昌县医院(192.90.252.34)'s config successful.
++2016-12-27 19:24:54,034 - __main__ - INFO - Begin to backup 南昌县路由2(192.90.255.134)'s config ...
++2016-12-27 19:24:54,388 - __main__ - INFO - Backup 南昌县路由2(192.90.255.134)'s config successful.
++2016-12-27 19:24:54,388 - __main__ - INFO - Begin to backup 南昌县路由1(192.90.255.133)'s config ...
++2016-12-27 19:24:55,036 - __main__ - INFO - Backup 南昌县路由1(192.90.255.133)'s config successful.
++2016-12-27 19:24:55,037 - __main__ - INFO - Begin to backup 南昌县交换1(192.90.102.251)'s config ...
++2016-12-27 19:24:56,117 - __main__ - INFO - Backup 南昌县交换1(192.90.102.251)'s config successful.
++2016-12-27 19:24:56,118 - __main__ - INFO - Begin to backup 南昌县交换2(192.90.102.252)'s config ...
++2016-12-27 19:24:57,227 - __main__ - INFO - Backup 南昌县交换2(192.90.102.252)'s config successful.
++2016-12-27 19:24:57,228 - __main__ - INFO - Begin to backup 水岸皇庭(192.90.252.18)'s config ...
++2016-12-27 19:24:57,532 - __main__ - INFO - Backup 水岸皇庭(192.90.252.18)'s config successful.
++2016-12-27 19:24:57,533 - __main__ - INFO - Begin to backup 工贸学院(192.90.252.58)'s config ...
++2016-12-27 19:24:57,847 - __main__ - INFO - Backup 工贸学院(192.90.252.58)'s config successful.
++2016-12-27 19:24:57,847 - __main__ - INFO - Begin to backup 洪都路由2(192.90.255.138)'s config ...
++2016-12-27 19:24:58,173 - __main__ - INFO - Backup 洪都路由2(192.90.255.138)'s config successful.
++2016-12-27 19:24:58,173 - __main__ - INFO - Begin to backup 洪都路由1(192.90.255.137)'s config ...
++2016-12-27 19:24:58,858 - __main__ - INFO - Backup 洪都路由1(192.90.255.137)'s config successful.
++2016-12-27 19:24:58,859 - __main__ - INFO - Begin to backup 洪都交换(192.90.104.251)'s config ...
++2016-12-27 19:24:59,984 - __main__ - INFO - Backup 洪都交换(192.90.104.251)'s config successful.
++2016-12-27 19:24:59,984 - __main__ - INFO - Begin to backup 进贤路由2(192.90.255.142)'s config ...
++2016-12-27 19:25:03,539 - __main__ - INFO - Backup 进贤路由2(192.90.255.142)'s config successful.
++2016-12-27 19:25:03,540 - __main__ - INFO - Begin to backup 进贤路由1(192.90.255.141)'s config ...
++2016-12-27 19:25:04,180 - __main__ - INFO - Backup 进贤路由1(192.90.255.141)'s config successful.
++2016-12-27 19:25:04,180 - __main__ - INFO - Begin to backup 进贤交换(192.90.106.251)'s config ...
++2016-12-27 19:25:05,272 - __main__ - INFO - Backup 进贤交换(192.90.106.251)'s config successful.
++2016-12-27 19:25:05,273 - __main__ - INFO - Begin to backup 香江商城(192.90.252.66)'s config ...
++2016-12-27 19:25:05,560 - __main__ - INFO - Backup 香江商城(192.90.252.66)'s config successful.
++2016-12-27 19:25:05,560 - __main__ - INFO - Begin to backup 高新路由2(192.90.255.146)'s config ...
++2016-12-27 19:25:05,887 - __main__ - INFO - Backup 高新路由2(192.90.255.146)'s config successful.
++2016-12-27 19:25:05,887 - __main__ - INFO - Begin to backup 高新路由1(192.90.255.145)'s config ...
++2016-12-27 19:25:06,490 - __main__ - INFO - Backup 高新路由1(192.90.255.145)'s config successful.
++2016-12-27 19:25:06,491 - __main__ - INFO - Begin to backup 高新交换1(192.90.108.251)'s config ...
++2016-12-27 19:25:07,583 - __main__ - INFO - Backup 高新交换1(192.90.108.251)'s config successful.
++2016-12-27 19:25:07,584 - __main__ - INFO - Begin to backup 高新交换2(192.90.108.252)'s config ...
++2016-12-27 19:25:28,586 - __main__ - ERROR - Can not connect to 高新交换2(192.90.108.252)!
++2016-12-27 19:25:28,587 - __main__ - ERROR - Backup 高新交换2(192.90.108.252)'s config failure!
++2016-12-27 19:25:28,588 - __main__ - INFO - Begin to backup 翠苑路(192.90.252.74)'s config ...
++2016-12-27 19:25:28,934 - __main__ - INFO - Backup 翠苑路(192.90.252.74)'s config successful.
++2016-12-27 19:25:28,935 - __main__ - INFO - Begin to backup 省高院(192.90.252.82)'s config ...
++2016-12-27 19:25:29,504 - __main__ - INFO - Backup 省高院(192.90.252.82)'s config successful.
++2016-12-27 19:25:29,505 - __main__ - INFO - Begin to backup 西客站(192.90.252.98)'s config ...
++2016-12-27 19:25:29,764 - __main__ - INFO - Backup 西客站(192.90.252.98)'s config successful.
++2016-12-27 19:25:29,765 - __main__ - INFO - Begin to backup 新建大道(192.90.252.114)'s config ...
++2016-12-27 19:25:30,527 - __main__ - INFO - Backup 新建大道(192.90.252.114)'s config successful.
++2016-12-27 19:25:30,528 - __main__ - INFO - Begin to backup 新建路由1(192.90.255.153)'s config ...
++2016-12-27 19:25:30,930 - __main__ - INFO - Backup 新建路由1(192.90.255.153)'s config successful.
++2016-12-27 19:25:30,930 - __main__ - INFO - Begin to backup 新建路由2(192.90.255.154)'s config ...
++2016-12-27 19:25:31,257 - __main__ - INFO - Backup 新建路由2(192.90.255.154)'s config successful.
++2016-12-27 19:25:31,258 - __main__ - INFO - Begin to backup 新建交换(192.90.112.251)'s config ...
++2016-12-27 19:25:31,767 - __main__ - INFO - Backup 新建交换(192.90.112.251)'s config successful.
++2016-12-27 19:25:31,767 - __main__ - INFO - Begin to backup 青云路由1(192.90.255.157)'s config ...
++2016-12-27 19:25:32,349 - __main__ - INFO - Backup 青云路由1(192.90.255.157)'s config successful.
++2016-12-27 19:25:32,350 - __main__ - INFO - Begin to backup 青云路由2(192.90.255.158)'s config ...
++2016-12-27 19:25:32,974 - __main__ - INFO - Backup 青云路由2(192.90.255.158)'s config successful.
++2016-12-27 19:25:32,975 - __main__ - INFO - Begin to backup 安义路由1(192.90.255.161)'s config ...
++2016-12-27 19:25:33,596 - __main__ - INFO - Backup 安义路由1(192.90.255.161)'s config successful.
++2016-12-27 19:25:33,597 - __main__ - INFO - Begin to backup 安义路由2(192.90.255.162)'s config ...
++2016-12-27 19:25:34,244 - __main__ - INFO - Backup 安义路由2(192.90.255.162)'s config successful.
++2016-12-27 19:25:34,245 - __main__ - INFO - Begin to backup 八一路由1(192.90.255.165)'s config ...
++2016-12-27 19:25:34,919 - __main__ - INFO - Backup 八一路由1(192.90.255.165)'s config successful.
++2016-12-27 19:25:34,920 - __main__ - INFO - Begin to backup 八一路由2(192.90.255.166)'s config ...
++2016-12-27 19:25:35,550 - __main__ - INFO - Backup 八一路由2(192.90.255.166)'s config successful.
++2016-12-27 19:25:35,550 - __main__ - INFO - Begin to backup 北东路由1(192.90.255.169)'s config ...
++2016-12-27 19:25:36,272 - __main__ - INFO - Backup 北东路由1(192.90.255.169)'s config successful.
++2016-12-27 19:25:36,273 - __main__ - INFO - Begin to backup 北东路由2(192.90.255.170)'s config ...
++2016-12-27 19:25:36,921 - __main__ - INFO - Backup 北东路由2(192.90.255.170)'s config successful.
++2016-12-27 19:25:36,921 - __main__ - INFO - There are 80 of 81 devices backuped to ftp://192.90.33.235/20161227-192426.
++2016-12-30 11:37:02,191 - __main__ - INFO - ***Begin to backup network device's config to FTP...
++2016-12-30 11:37:02,206 - __main__ - INFO - Begin to create directory on FTP server for backup...
++2016-12-30 11:37:02,299 - __main__ - INFO - Create directory 20161230-113702 on FTP server 192.90.33.235 success!
++2016-12-30 11:37:02,300 - __main__ - INFO - Begin to get network device's parameter from DB server...
++2016-12-30 11:37:02,328 - __main__ - INFO - Get 19 network device's parameter from DB server.
++2016-12-30 11:37:02,328 - __main__ - INFO - Begin to backup 1楼交换1(192.90.33.11)'s config ...
++2016-12-30 11:37:02,448 - __main__ - DEBUG - b"\r\n********************************************************************************\r\n*  Copyright(c) 2004-2011 Hangzhou H3C Tech. Co., Ltd. All rights reserved.    *\r\n*  Without the owner's prior written consent,                                  *\r\n*  no decompiling or reverse-engineering shall be allowed.                     *\r\n********************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:37:02,502 - __main__ - DEBUG - b'liuzheng\r\nPassword:'
++2016-12-30 11:37:02,538 - __main__ - DEBUG - b'\r\n<N-01F-S31-001>'
++2016-12-30 11:37:03,382 - __main__ - INFO - Backup 1楼交换1(192.90.33.11)'s config successful.
++2016-12-30 11:37:03,383 - __main__ - INFO - Begin to backup 1楼交换2(192.90.33.12)'s config ...
++2016-12-30 11:37:03,503 - __main__ - DEBUG - b"\r\n********************************************************************************\r\n*  Copyright(c) 2004-2011 Hangzhou H3C Tech. Co., Ltd. All rights reserved.    *\r\n*  Without the owner's prior written consent,                                  *\r\n*  no decompiling or reverse-engineering shall be allowed.                     *\r\n********************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:37:03,526 - __main__ - DEBUG - b'liuzheng\r\nPassword:'
++2016-12-30 11:37:03,563 - __main__ - DEBUG - b'\r\n<N-01F-S31-002>'
++2016-12-30 11:37:04,383 - __main__ - INFO - Backup 1楼交换2(192.90.33.12)'s config successful.
++2016-12-30 11:37:04,384 - __main__ - INFO - Begin to backup 2楼交换1(192.90.33.21)'s config ...
++2016-12-30 11:37:04,495 - __main__ - DEBUG - b"\r\n******************************************************************************\r\n* Copyright (c) 2004-2011 Hangzhou H3C Tech. Co., Ltd. All rights reserved.  *\r\n* Without the owner's prior written consent,                                 *\r\n* no decompiling or reverse-engineering shall be allowed.                    *\r\n******************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:37:04,499 - __main__ - DEBUG - b'liuzheng\r\nPassword:'
++2016-12-30 11:37:04,526 - __main__ - DEBUG - b'\r\n<N-02F-S31-001>'
++2016-12-30 11:37:04,846 - __main__ - INFO - Backup 2楼交换1(192.90.33.21)'s config successful.
++2016-12-30 11:37:04,846 - __main__ - INFO - Begin to backup 2楼交换2(192.90.33.22)'s config ...
++2016-12-30 11:37:04,957 - __main__ - DEBUG - b"\r\n******************************************************************************\r\n* Copyright (c) 2004-2011 Hangzhou H3C Tech. Co., Ltd. All rights reserved.  *\r\n* Without the owner's prior written consent,                                 *\r\n* no decompiling or reverse-engineering shall be allowed.                    *\r\n******************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:37:04,961 - __main__ - DEBUG - b'liuzheng\r\nPassword:'
++2016-12-30 11:37:04,980 - __main__ - DEBUG - b'\r\n<N-02F-S31-002>'
++2016-12-30 11:37:05,212 - __main__ - INFO - Backup 2楼交换2(192.90.33.22)'s config successful.
++2016-12-30 11:37:05,212 - __main__ - INFO - Begin to backup 3楼交换(192.90.33.31)'s config ...
++2016-12-30 11:37:05,322 - __main__ - DEBUG - b"\r\n******************************************************************************\r\n* Copyright (c) 2004-2014 Hangzhou H3C Tech. Co., Ltd. All rights reserved.  *\r\n* Without the owner's prior written consent,                                 *\r\n* no decompiling or reverse-engineering shall be allowed.                    *\r\n******************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:37:05,522 - __main__ - DEBUG - b'liuzheng\r\nPassword:'
++2016-12-30 11:37:05,542 - __main__ - DEBUG - b'\r\n<N-3F-S31-001>'
++2016-12-30 11:37:05,773 - __main__ - INFO - Backup 3楼交换(192.90.33.31)'s config successful.
++2016-12-30 11:37:05,774 - __main__ - INFO - Begin to backup 4楼交换(192.90.33.41)'s config ...
++2016-12-30 11:37:05,885 - __main__ - DEBUG - b"\r\n******************************************************************************\r\n* Copyright (c) 2004-2011 Hangzhou H3C Tech. Co., Ltd. All rights reserved.  *\r\n* Without the owner's prior written consent,                                 *\r\n* no decompiling or reverse-engineering shall be allowed.                    *\r\n******************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:37:05,889 - __main__ - DEBUG - b'liuzheng\r\nPassword:'
++2016-12-30 11:37:05,901 - __main__ - DEBUG - b'\r\n<N-4F-S31-001>'
++2016-12-30 11:37:06,141 - __main__ - INFO - Backup 4楼交换(192.90.33.41)'s config successful.
++2016-12-30 11:37:06,141 - __main__ - INFO - Begin to backup 11楼交换(192.90.33.111)'s config ...
++2016-12-30 11:37:06,252 - __main__ - DEBUG - b"\r\n******************************************************************************\r\n* Copyright (c) 2004-2011 Hangzhou H3C Tech. Co., Ltd. All rights reserved.  *\r\n* Without the owner's prior written consent,                                 *\r\n* no decompiling or reverse-engineering shall be allowed.                    *\r\n******************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:37:06,256 - __main__ - DEBUG - b'liuzheng\r\nPassword:'
++2016-12-30 11:37:06,278 - __main__ - DEBUG - b'\r\n<N-11F-S31-001>'
++2016-12-30 11:37:06,609 - __main__ - INFO - Backup 11楼交换(192.90.33.111)'s config successful.
++2016-12-30 11:37:06,609 - __main__ - INFO - Begin to backup 12楼交换(192.90.33.121)'s config ...
++2016-12-30 11:37:06,728 - __main__ - DEBUG - b"\r\n******************************************************************************\r\n* Copyright (c) 2004-2011 Hangzhou H3C Tech. Co., Ltd. All rights reserved.  *\r\n* Without the owner's prior written consent,                                 *\r\n* no decompiling or reverse-engineering shall be allowed.                    *\r\n******************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:37:06,921 - __main__ - DEBUG - b'liuzheng\r\nPassword:'
++2016-12-30 11:37:06,950 - __main__ - DEBUG - b'\r\n<N-12F-S31-001>'
++2016-12-30 11:37:07,321 - __main__ - INFO - Backup 12楼交换(192.90.33.121)'s config successful.
++2016-12-30 11:37:07,321 - __main__ - INFO - Begin to backup 金库交换(192.90.33.151)'s config ...
++2016-12-30 11:37:07,440 - __main__ - DEBUG - b"\r\n********************************************************************************\r\n*  Copyright(c) 2004-2011 Hangzhou H3C Tech. Co., Ltd. All rights reserved.    *\r\n*  Without the owner's prior written consent,                                  *\r\n*  no decompiling or reverse-engineering shall be allowed.                     *\r\n********************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:37:07,455 - __main__ - DEBUG - b'liuzheng\r\nPassword:'
++2016-12-30 11:37:07,491 - __main__ - DEBUG - b'\r\n<N-DXJK-S31-001>'
++2016-12-30 11:37:08,301 - __main__ - INFO - Backup 金库交换(192.90.33.151)'s config successful.
++2016-12-30 11:37:08,303 - __main__ - INFO - Begin to backup 监控交换(192.90.33.141)'s config ...
++2016-12-30 11:37:08,424 - __main__ - DEBUG - b"\r\n********************************************************************************\r\n*  Copyright(c) 2004-2009 Hangzhou H3C Tech. Co., Ltd. All rights reserved.    *\r\n*  Without the owner's prior written consent,                                  *\r\n*  no decompiling or reverse-engineering shall be allowed.                     *\r\n********************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:37:08,528 - __main__ - DEBUG - b'liuzheng@system\r\nPassword:'
++2016-12-30 11:37:08,546 - __main__ - DEBUG - b'\r\n<N-JKZX-S31-001>'
++2016-12-30 11:37:09,339 - __main__ - INFO - Backup 监控交换(192.90.33.141)'s config successful.
++2016-12-30 11:37:09,339 - __main__ - INFO - Begin to backup 阳明交换1(192.90.110.251)'s config ...
++2016-12-30 11:37:09,463 - __main__ - DEBUG - b"\r\n********************************************************************************\r\n*  Copyright(c) 2004-2009 Hangzhou H3C Tech. Co., Ltd. All rights reserved.    *\r\n*  Without the owner's prior written consent,                                  *\r\n*  no decompiling or reverse-engineering shall be allowed.                     *\r\n********************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:37:09,481 - __main__ - DEBUG - b'liuzheng@system\r\nPassword:'
++2016-12-30 11:37:09,496 - __main__ - DEBUG - b'\r\n<SW_YMZH_001>'
++2016-12-30 11:37:10,443 - __main__ - INFO - Backup 阳明交换1(192.90.110.251)'s config successful.
++2016-12-30 11:37:10,443 - __main__ - INFO - Begin to backup 阳明交换2(192.90.110.252)'s config ...
++2016-12-30 11:37:10,566 - __main__ - DEBUG - b"\r\n********************************************************************************\r\n*  Copyright(c) 2004-2009 Hangzhou H3C Tech. Co., Ltd. All rights reserved.    *\r\n*  Without the owner's prior written consent,                                  *\r\n*  no decompiling or reverse-engineering shall be allowed.                     *\r\n********************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:37:10,621 - __main__ - DEBUG - b'liuzheng@system\r\nPassword:'
++2016-12-30 11:37:10,635 - __main__ - DEBUG - b'\r\n<SW_YMZH_002>'
++2016-12-30 11:37:11,511 - __main__ - INFO - Backup 阳明交换2(192.90.110.252)'s config successful.
++2016-12-30 11:37:11,511 - __main__ - INFO - Begin to backup 南昌县交换1(192.90.102.251)'s config ...
++2016-12-30 11:37:11,635 - __main__ - DEBUG - b"\r\n********************************************************************************\r\n*  Copyright(c) 2004-2010 Hangzhou H3C Tech. Co., Ltd. All rights reserved.    *\r\n*  Without the owner's prior written consent,                                  *\r\n*  no decompiling or reverse-engineering shall be allowed.                     *\r\n********************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:37:11,753 - __main__ - DEBUG - b'liuzheng\r\nPassword:'
++2016-12-30 11:37:11,769 - __main__ - DEBUG - b'\r\n<SW_NCXZH_1>'
++2016-12-30 11:37:12,640 - __main__ - INFO - Backup 南昌县交换1(192.90.102.251)'s config successful.
++2016-12-30 11:37:12,640 - __main__ - INFO - Begin to backup 南昌县交换2(192.90.102.252)'s config ...
++2016-12-30 11:37:12,767 - __main__ - DEBUG - b"\r\n********************************************************************************\r\n*  Copyright(c) 2004-2010 Hangzhou H3C Tech. Co., Ltd. All rights reserved.    *\r\n*  Without the owner's prior written consent,                                  *\r\n*  no decompiling or reverse-engineering shall be allowed.                     *\r\n********************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:37:12,903 - __main__ - DEBUG - b'liuzheng\r\nPassword:'
++2016-12-30 11:37:12,921 - __main__ - DEBUG - b'\r\n<SW_NCXZH_2>'
++2016-12-30 11:37:13,782 - __main__ - INFO - Backup 南昌县交换2(192.90.102.252)'s config successful.
++2016-12-30 11:37:13,783 - __main__ - INFO - Begin to backup 洪都交换(192.90.104.251)'s config ...
++2016-12-30 11:37:13,906 - __main__ - DEBUG - b"\r\n********************************************************************************\r\n*  Copyright(c) 2004-2011 Hangzhou H3C Tech. Co., Ltd. All rights reserved.    *\r\n*  Without the owner's prior written consent,                                  *\r\n*  no decompiling or reverse-engineering shall be allowed.                     *\r\n********************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:37:13,925 - __main__ - DEBUG - b'liuzheng\r\nPassword:'
++2016-12-30 11:37:13,941 - __main__ - DEBUG - b'\r\n<SW_HDDD_1>'
++2016-12-30 11:37:14,810 - __main__ - INFO - Backup 洪都交换(192.90.104.251)'s config successful.
++2016-12-30 11:37:14,810 - __main__ - INFO - Begin to backup 进贤交换(192.90.106.251)'s config ...
++2016-12-30 11:37:14,933 - __main__ - DEBUG - b"\r\n********************************************************************************\r\n*  Copyright(c) 2004-2011 Hangzhou H3C Tech. Co., Ltd. All rights reserved.    *\r\n*  Without the owner's prior written consent,                                  *\r\n*  no decompiling or reverse-engineering shall be allowed.                     *\r\n********************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:37:14,965 - __main__ - DEBUG - b'liuzheng\r\nPassword:'
++2016-12-30 11:37:14,980 - __main__ - DEBUG - b'\r\n<SW_JXXZH_1>'
++2016-12-30 11:37:15,854 - __main__ - INFO - Backup 进贤交换(192.90.106.251)'s config successful.
++2016-12-30 11:37:15,855 - __main__ - INFO - Begin to backup 高新交换1(192.90.108.251)'s config ...
++2016-12-30 11:37:15,977 - __main__ - DEBUG - b"\r\n********************************************************************************\r\n*  Copyright(c) 2004-2011 Hangzhou H3C Tech. Co., Ltd. All rights reserved.    *\r\n*  Without the owner's prior written consent,                                  *\r\n*  no decompiling or reverse-engineering shall be allowed.                     *\r\n********************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:37:16,072 - __main__ - DEBUG - b'liuzheng\r\nPassword:'
++2016-12-30 11:37:16,086 - __main__ - DEBUG - b'\r\n<SW_GXZH_1>'
++2016-12-30 11:37:16,913 - __main__ - INFO - Backup 高新交换1(192.90.108.251)'s config successful.
++2016-12-30 11:37:16,914 - __main__ - INFO - Begin to backup 高新交换2(192.90.108.252)'s config ...
++2016-12-30 11:37:17,029 - __main__ - DEBUG - b"\r\n********************************************************************************\r\n*  Copyright(c) 2004-2008 Hangzhou H3C Tech. Co., Ltd. All rights reserved.    *\r\n*  Without the owner's prior written consent,                                  *\r\n*  no decompiling or reverse-engineering shall be allowed.                     *\r\n********************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:37:17,097 - __main__ - DEBUG - b'liuzheng@system\r\nPassword:'
++2016-12-30 11:37:17,116 - __main__ - DEBUG - b'\r\n<SW_GXZH_2>'
++2016-12-30 11:37:17,946 - __main__ - INFO - Backup 高新交换2(192.90.108.252)'s config successful.
++2016-12-30 11:37:17,946 - __main__ - INFO - Begin to backup 新建交换(192.90.112.251)'s config ...
++2016-12-30 11:37:18,061 - __main__ - DEBUG - b"\r\n******************************************************************************\r\n* Copyright (c) 2004-2011 Hangzhou H3C Tech. Co., Ltd. All rights reserved.  *\r\n* Without the owner's prior written consent,                                 *\r\n* no decompiling or reverse-engineering shall be allowed.                    *\r\n******************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:37:18,171 - __main__ - DEBUG - b'liuzheng\r\nPassword:'
++2016-12-30 11:37:18,193 - __main__ - DEBUG - b'\r\n<SW_XJXZH_1>'
++2016-12-30 11:37:18,658 - __main__ - INFO - Backup 新建交换(192.90.112.251)'s config successful.
++2016-12-30 11:37:18,659 - __main__ - INFO - There are 19 of 19 devices backuped to ftp://192.90.33.235/20161230-113702.
++2016-12-30 11:38:41,414 - __main__ - INFO - ***Begin to backup network device's config to FTP...
++2016-12-30 11:38:41,414 - __main__ - INFO - Begin to create directory on FTP server for backup...
++2016-12-30 11:38:41,426 - __main__ - INFO - Create directory 20161230-113841 on FTP server 192.90.33.235 success!
++2016-12-30 11:38:41,427 - __main__ - INFO - Begin to get network device's parameter from DB server...
++2016-12-30 11:38:41,434 - __main__ - INFO - Get 19 network device's parameter from DB server.
++2016-12-30 11:38:41,434 - __main__ - INFO - Begin to backup 1楼交换1(192.90.33.11)'s config ...
++2016-12-30 11:38:41,562 - __main__ - DEBUG - b"\r\n********************************************************************************\r\n*  Copyright(c) 2004-2011 Hangzhou H3C Tech. Co., Ltd. All rights reserved.    *\r\n*  Without the owner's prior written consent,                                  *\r\n*  no decompiling or reverse-engineering shall be allowed.                     *\r\n********************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:38:41,653 - __main__ - DEBUG - b'liuzheng\r\nPassword:'
++2016-12-30 11:38:41,668 - __main__ - DEBUG - b'\r\n<N-01F-S31-001>'
++2016-12-30 11:38:41,790 - __main__ - DEBUG - b'\r\n%May  6 03:47:46:364 2000 N-01F-S31-001 SHELL/5/LOGIN:- 1 - liuzheng(192.90.52.229) in unit1 loginsu \r\n Password:'
++2016-12-30 11:38:41,799 - __main__ - DEBUG - b'\r\nUser privilege level is 3, and only those commands can be used \r\nwhose level is equal or less than this.\r\nPrivilege note: 0-VISIT, 1-MONITOR, 2-SYSTEM, 3-MANAGE\r\n<N-01F-S31-001>'
++2016-12-30 11:38:41,987 - __main__ - DEBUG - b'ftp 192.90.33.235\r\nTrying ...\r\nPress CTRL+K to abort\r\nConnected.\r\n220 (vsFTPd 2.0.5)\r\nUser(none):'
++2016-12-30 11:38:42,019 - __main__ - DEBUG - b'bknetcfg\r\n331 Please specify the password.\r\nPassword:'
++2016-12-30 11:38:42,508 - __main__ - INFO - Backup 1楼交换1(192.90.33.11)'s config successful.
++2016-12-30 11:38:42,509 - __main__ - INFO - Begin to backup 1楼交换2(192.90.33.12)'s config ...
++2016-12-30 11:38:42,629 - __main__ - DEBUG - b"\r\n********************************************************************************\r\n*  Copyright(c) 2004-2011 Hangzhou H3C Tech. Co., Ltd. All rights reserved.    *\r\n*  Without the owner's prior written consent,                                  *\r\n*  no decompiling or reverse-engineering shall be allowed.                     *\r\n********************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:38:42,672 - __main__ - DEBUG - b'liuzheng\r\nPassword:'
++2016-12-30 11:38:42,692 - __main__ - DEBUG - b'\r\n<N-01F-S31-002>'
++2016-12-30 11:38:42,814 - __main__ - DEBUG - b'\r\n%May  6 03:47:35:505 2000 N-01F-S31-002 SHELL/5/LOGIN:- 1 - liuzheng(192.90.52.229) in unit1 loginsu \r\n Password:'
++2016-12-30 11:38:42,833 - __main__ - DEBUG - b'\r\nUser privilege level is 3, and only those commands can be used \r\nwhose level is equal or less than this.\r\nPrivilege note: 0-VISIT, 1-MONITOR, 2-SYSTEM, 3-MANAGE\r\n<N-01F-S31-002>'
++2016-12-30 11:38:43,010 - __main__ - DEBUG - b'ftp 192.90.33.235\r\nTrying ...\r\nPress CTRL+K to abort\r\nConnected.\r\n220 (vsFTPd 2.0.5)\r\nUser(none):'
++2016-12-30 11:38:43,029 - __main__ - DEBUG - b'bknetcfg\r\n331 Please specify the password.\r\nPassword:'
++2016-12-30 11:38:43,516 - __main__ - INFO - Backup 1楼交换2(192.90.33.12)'s config successful.
++2016-12-30 11:38:43,516 - __main__ - INFO - Begin to backup 2楼交换1(192.90.33.21)'s config ...
++2016-12-30 11:38:43,628 - __main__ - DEBUG - b"\r\n******************************************************************************\r\n* Copyright (c) 2004-2011 Hangzhou H3C Tech. Co., Ltd. All rights reserved.  *\r\n* Without the owner's prior written consent,                                 *\r\n* no decompiling or reverse-engineering shall be allowed.                    *\r\n******************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:38:43,631 - __main__ - DEBUG - b'liuzheng\r\nPassword:'
++2016-12-30 11:38:43,657 - __main__ - DEBUG - b'\r\n<N-02F-S31-001>'
++2016-12-30 11:38:43,686 - __main__ - DEBUG - b'su \r\n Password:'
++2016-12-30 11:38:43,692 - __main__ - DEBUG - b'\r\nUser privilege level is 3, and only those commands can be used \r\nwhose level is equal or less than this.\r\nPrivilege note: 0-VISIT, 1-MONITOR, 2-SYSTEM, 3-MANAGE\r\n<N-02F-S31-001>'
++2016-12-30 11:38:43,757 - __main__ - DEBUG - b'ftp 192.90.33.235\r\nTrying 192.90.33.235 ...\r\nPress CTRL+K to abort \r\nConnected to 192.90.33.235. \r\n220 (vsFTPd 2.0.5)\r\nUser(192.90.33.235:(none)):'
++2016-12-30 11:38:43,799 - __main__ - DEBUG - b'bknetcfg\r\n331 Please specify the password.\r\nPassword:'
++2016-12-30 11:38:43,945 - __main__ - INFO - Backup 2楼交换1(192.90.33.21)'s config successful.
++2016-12-30 11:38:43,945 - __main__ - INFO - Begin to backup 2楼交换2(192.90.33.22)'s config ...
++2016-12-30 11:38:44,053 - __main__ - DEBUG - b"\r\n******************************************************************************\r\n* Copyright (c) 2004-2011 Hangzhou H3C Tech. Co., Ltd. All rights reserved.  *\r\n* Without the owner's prior written consent,                                 *\r\n* no decompiling or reverse-engineering shall be allowed.                    *\r\n******************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:38:44,057 - __main__ - DEBUG - b'liuzheng\r\nPassword:'
++2016-12-30 11:38:44,076 - __main__ - DEBUG - b'\r\n<N-02F-S31-002>'
++2016-12-30 11:38:44,091 - __main__ - DEBUG - b'su \r\n Password:'
++2016-12-30 11:38:44,097 - __main__ - DEBUG - b'\r\nUser privilege level is 3, and only those commands can be used \r\nwhose level is equal or less than this.\r\nPrivilege note: 0-VISIT, 1-MONITOR, 2-SYSTEM, 3-MANAGE\r\n<N-02F-S31-002>'
++2016-12-30 11:38:44,142 - __main__ - DEBUG - b'ftp 192.90.33.235\r\nTrying 192.90.33.235 ...\r\nPress CTRL+K to abort \r\nConnected to 192.90.33.235. \r\n220 (vsFTPd 2.0.5)\r\nUser(192.90.33.235:(none)):'
++2016-12-30 11:38:44,152 - __main__ - DEBUG - b'bknetcfg\r\n331 Please specify the password.\r\nPassword:'
++2016-12-30 11:38:44,300 - __main__ - INFO - Backup 2楼交换2(192.90.33.22)'s config successful.
++2016-12-30 11:38:44,300 - __main__ - INFO - Begin to backup 3楼交换(192.90.33.31)'s config ...
++2016-12-30 11:38:44,411 - __main__ - DEBUG - b"\r\n******************************************************************************\r\n* Copyright (c) 2004-2014 Hangzhou H3C Tech. Co., Ltd. All rights reserved.  *\r\n* Without the owner's prior written consent,                                 *\r\n* no decompiling or reverse-engineering shall be allowed.                    *\r\n******************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:38:44,415 - __main__ - DEBUG - b'liuzheng\r\nPassword:'
++2016-12-30 11:38:44,433 - __main__ - DEBUG - b'\r\n<N-3F-S31-001>'
++2016-12-30 11:38:44,450 - __main__ - DEBUG - b'su \r\nPlease input the password to change the privilege level. Press CTRL_C to abort.\r\n Password:'
++2016-12-30 11:38:44,456 - __main__ - DEBUG - b'\r\nUser privilege level is 3, and only those commands can be used \r\nwhose level is equal or less than this.\r\nPrivilege note: 0-VISIT, 1-MONITOR, 2-SYSTEM, 3-MANAGE\r\n<N-3F-S31-001>'
++2016-12-30 11:38:44,490 - __main__ - DEBUG - b'ftp 192.90.33.235\r\nTrying 192.90.33.235 ...\r\nPress CTRL+K to abort \r\nConnected to 192.90.33.235. \r\n220 (vsFTPd 2.0.5)\r\nUser(192.90.33.235:(none)):'
++2016-12-30 11:38:44,499 - __main__ - DEBUG - b'bknetcfg\r\n331 Please specify the password.\r\nPassword:'
++2016-12-30 11:38:44,647 - __main__ - INFO - Backup 3楼交换(192.90.33.31)'s config successful.
++2016-12-30 11:38:44,648 - __main__ - INFO - Begin to backup 4楼交换(192.90.33.41)'s config ...
++2016-12-30 11:38:44,756 - __main__ - DEBUG - b"\r\n******************************************************************************\r\n* Copyright (c) 2004-2011 Hangzhou H3C Tech. Co., Ltd. All rights reserved.  *\r\n* Without the owner's prior written consent,                                 *\r\n* no decompiling or reverse-engineering shall be allowed.                    *\r\n******************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:38:44,760 - __main__ - DEBUG - b'liuzheng\r\nPassword:'
++2016-12-30 11:38:44,771 - __main__ - DEBUG - b'\r\n<N-4F-S31-001>'
++2016-12-30 11:38:44,786 - __main__ - DEBUG - b'su \r\n Password:'
++2016-12-30 11:38:44,792 - __main__ - DEBUG - b'\r\nUser privilege level is 3, and only those commands can be used \r\nwhose level is equal or less than this.\r\nPrivilege note: 0-VISIT, 1-MONITOR, 2-SYSTEM, 3-MANAGE\r\n<N-4F-S31-001>'
++2016-12-30 11:38:44,823 - __main__ - DEBUG - b'ftp 192.90.33.235\r\nTrying 192.90.33.235 ...\r\nPress CTRL+K to abort \r\nConnected to 192.90.33.235. \r\n220 (vsFTPd 2.0.5)\r\nUser(192.90.33.235:(none)):'
++2016-12-30 11:38:44,832 - __main__ - DEBUG - b'bknetcfg\r\n331 Please specify the password.\r\nPassword:'
++2016-12-30 11:38:44,973 - __main__ - INFO - Backup 4楼交换(192.90.33.41)'s config successful.
++2016-12-30 11:38:44,973 - __main__ - INFO - Begin to backup 11楼交换(192.90.33.111)'s config ...
++2016-12-30 11:38:45,087 - __main__ - DEBUG - b"\r\n******************************************************************************\r\n* Copyright (c) 2004-2011 Hangzhou H3C Tech. Co., Ltd. All rights reserved.  *\r\n* Without the owner's prior written consent,                                 *\r\n* no decompiling or reverse-engineering shall be allowed.                    *\r\n******************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:38:45,166 - __main__ - DEBUG - b'liuzheng\r\nPassword:'
++2016-12-30 11:38:45,185 - __main__ - DEBUG - b'\r\n<N-11F-S31-001>'
++2016-12-30 11:38:45,199 - __main__ - DEBUG - b'su \r\n Password:'
++2016-12-30 11:38:45,237 - __main__ - DEBUG - b'\r\nUser privilege level is 3, and only those commands can be used \r\nwhose level is equal or less than this.\r\nPrivilege note: 0-VISIT, 1-MONITOR, 2-SYSTEM, 3-MANAGE\r\n<N-11F-S31-001>'
++2016-12-30 11:38:45,268 - __main__ - DEBUG - b'ftp 192.90.33.235\r\nTrying 192.90.33.235 ...\r\nPress CTRL+K to abort \r\nConnected to 192.90.33.235. \r\n220 (vsFTPd 2.0.5)\r\nUser(192.90.33.235:(none)):'
++2016-12-30 11:38:45,277 - __main__ - DEBUG - b'bknetcfg\r\n331 Please specify the password.\r\nPassword:'
++2016-12-30 11:38:45,428 - __main__ - INFO - Backup 11楼交换(192.90.33.111)'s config successful.
++2016-12-30 11:38:45,429 - __main__ - INFO - Begin to backup 12楼交换(192.90.33.121)'s config ...
++2016-12-30 11:38:45,539 - __main__ - DEBUG - b"\r\n******************************************************************************\r\n* Copyright (c) 2004-2011 Hangzhou H3C Tech. Co., Ltd. All rights reserved.  *\r\n* Without the owner's prior written consent,                                 *\r\n* no decompiling or reverse-engineering shall be allowed.                    *\r\n******************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:38:45,545 - __main__ - DEBUG - b'liuzheng\r\nPassword:'
++2016-12-30 11:38:45,564 - __main__ - DEBUG - b'\r\n<N-12F-S31-001>'
++2016-12-30 11:38:45,579 - __main__ - DEBUG - b'su \r\n Password:'
++2016-12-30 11:38:45,586 - __main__ - DEBUG - b'\r\nUser privilege level is 3, and only those commands can be used \r\nwhose level is equal or less than this.\r\nPrivilege note: 0-VISIT, 1-MONITOR, 2-SYSTEM, 3-MANAGE\r\n<N-12F-S31-001>'
++2016-12-30 11:38:45,618 - __main__ - DEBUG - b'ftp 192.90.33.235\r\nTrying 192.90.33.235 ...\r\nPress CTRL+K to abort \r\nConnected to 192.90.33.235. \r\n220 (vsFTPd 2.0.5)\r\nUser(192.90.33.235:(none)):'
++2016-12-30 11:38:45,626 - __main__ - DEBUG - b'bknetcfg\r\n331 Please specify the password.\r\nPassword:'
++2016-12-30 11:38:45,827 - __main__ - INFO - Backup 12楼交换(192.90.33.121)'s config successful.
++2016-12-30 11:38:45,828 - __main__ - INFO - Begin to backup 金库交换(192.90.33.151)'s config ...
++2016-12-30 11:38:45,947 - __main__ - DEBUG - b"\r\n********************************************************************************\r\n*  Copyright(c) 2004-2011 Hangzhou H3C Tech. Co., Ltd. All rights reserved.    *\r\n*  Without the owner's prior written consent,                                  *\r\n*  no decompiling or reverse-engineering shall be allowed.                     *\r\n********************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:38:45,988 - __main__ - DEBUG - b'liuzheng\r\nPassword:'
++2016-12-30 11:38:46,005 - __main__ - DEBUG - b'\r\n<N-DXJK-S31-001>'
++2016-12-30 11:38:46,128 - __main__ - DEBUG - b'\r\n%Jan 24 19:04:47:188 2002 N-DXJK-S31-001 SHELL/5/LOGIN:- 1 - liuzheng(192.90.52.229) in unit1 loginsu \r\n Password:'
++2016-12-30 11:38:46,144 - __main__ - DEBUG - b'\r\nUser privilege level is 3, and only those commands can be used \r\nwhose level is equal or less than this.\r\nPrivilege note: 0-VISIT, 1-MONITOR, 2-SYSTEM, 3-MANAGE\r\n<N-DXJK-S31-001>'
++2016-12-30 11:38:46,301 - __main__ - DEBUG - b'ftp 192.90.33.235\r\nTrying ...\r\nPress CTRL+K to abort\r\nConnected.\r\n220 (vsFTPd 2.0.5)\r\nUser(none):'
++2016-12-30 11:38:46,321 - __main__ - DEBUG - b'bknetcfg\r\n331 Please specify the password.\r\nPassword:'
++2016-12-30 11:38:46,793 - __main__ - INFO - Backup 金库交换(192.90.33.151)'s config successful.
++2016-12-30 11:38:46,794 - __main__ - INFO - Begin to backup 监控交换(192.90.33.141)'s config ...
++2016-12-30 11:38:46,918 - __main__ - DEBUG - b"\r\n********************************************************************************\r\n*  Copyright(c) 2004-2009 Hangzhou H3C Tech. Co., Ltd. All rights reserved.    *\r\n*  Without the owner's prior written consent,                                  *\r\n*  no decompiling or reverse-engineering shall be allowed.                     *\r\n********************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:38:46,985 - __main__ - DEBUG - b'liuzheng@system\r\nPassword:'
++2016-12-30 11:38:46,998 - __main__ - DEBUG - b'\r\n<N-JKZX-S31-001>'
++2016-12-30 11:38:47,119 - __main__ - DEBUG - b'\r\n%Oct 31 14:01:39:228 2000 N-JKZX-S31-001 SHELL/5/LOGIN:- 1 - liuzheng@system(192.90.52.229) in unit1 loginsu \r\n Password:'
++2016-12-30 11:38:47,137 - __main__ - DEBUG - b'\r\nUser privilege level is 3, and only those commands can be used \r\nwhose level is equal or less than this.\r\nPrivilege note: 0-VISIT, 1-MONITOR, 2-SYSTEM, 3-MANAGE\r\n<N-JKZX-S31-001>'
++2016-12-30 11:38:47,291 - __main__ - DEBUG - b'ftp 192.90.33.235\r\nTrying ...\r\nPress CTRL+K to abort\r\nConnected.\r\n220 (vsFTPd 2.0.5)\r\nUser(none):'
++2016-12-30 11:38:47,311 - __main__ - DEBUG - b'bknetcfg\r\n331 Please specify the password.\r\nPassword:'
++2016-12-30 11:38:47,806 - __main__ - INFO - Backup 监控交换(192.90.33.141)'s config successful.
++2016-12-30 11:38:47,806 - __main__ - INFO - Begin to backup 阳明交换1(192.90.110.251)'s config ...
++2016-12-30 11:38:47,929 - __main__ - DEBUG - b"\r\n********************************************************************************\r\n*  Copyright(c) 2004-2009 Hangzhou H3C Tech. Co., Ltd. All rights reserved.    *\r\n*  Without the owner's prior written consent,                                  *\r\n*  no decompiling or reverse-engineering shall be allowed.                     *\r\n********************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:38:47,938 - __main__ - DEBUG - b'liuzheng@system\r\nPassword:'
++2016-12-30 11:38:47,956 - __main__ - DEBUG - b'\r\n<SW_YMZH_001>'
++2016-12-30 11:38:48,073 - __main__ - DEBUG - b'\r\n%Jun 17 17:11:59:252 2000 SW_YMZH_001 SHELL/5/LOGIN:- 1 - liuzheng@system(192.90.52.229) in unit1 loginsu \r\n Password:'
++2016-12-30 11:38:48,092 - __main__ - DEBUG - b'\r\nUser privilege level is 3, and only those commands can be used \r\nwhose level is equal or less than this.\r\nPrivilege note: 0-VISIT, 1-MONITOR, 2-SYSTEM, 3-MANAGE\r\n<SW_YMZH_001>'
++2016-12-30 11:38:48,279 - __main__ - DEBUG - b'ftp 192.90.33.235\r\nTrying ...\r\nPress CTRL+K to abort\r\nConnected.\r\n220 (vsFTPd 2.0.5)\r\nUser(none):'
++2016-12-30 11:38:48,307 - __main__ - DEBUG - b'bknetcfg\r\n331 Please specify the password.\r\nPassword:'
++2016-12-30 11:38:48,860 - __main__ - INFO - Backup 阳明交换1(192.90.110.251)'s config successful.
++2016-12-30 11:38:48,860 - __main__ - INFO - Begin to backup 阳明交换2(192.90.110.252)'s config ...
++2016-12-30 11:38:48,982 - __main__ - DEBUG - b"\r\n********************************************************************************\r\n*  Copyright(c) 2004-2009 Hangzhou H3C Tech. Co., Ltd. All rights reserved.    *\r\n*  Without the owner's prior written consent,                                  *\r\n*  no decompiling or reverse-engineering shall be allowed.                     *\r\n********************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:38:49,059 - __main__ - DEBUG - b'liuzheng@system\r\nPassword:'
++2016-12-30 11:38:49,084 - __main__ - DEBUG - b'\r\n<SW_YMZH_002>'
++2016-12-30 11:38:49,204 - __main__ - DEBUG - b'\r\n%Apr 16 02:00:06:341 2000 SW_YMZH_002 SHELL/5/LOGIN:- 1 - liuzheng@system(192.90.52.229) in unit1 loginsu \r\n Password:'
++2016-12-30 11:38:49,222 - __main__ - DEBUG - b'\r\nUser privilege level is 3, and only those commands can be used \r\nwhose level is equal or less than this.\r\nPrivilege note: 0-VISIT, 1-MONITOR, 2-SYSTEM, 3-MANAGE\r\n<SW_YMZH_002>'
++2016-12-30 11:38:49,420 - __main__ - DEBUG - b'ftp 192.90.33.235\r\nTrying ...\r\nPress CTRL+K to abort\r\nConnected.\r\n220 (vsFTPd 2.0.5)\r\nUser(none):'
++2016-12-30 11:38:49,441 - __main__ - DEBUG - b'bknetcfg\r\n331 Please specify the password.\r\nPassword:'
++2016-12-30 11:38:50,014 - __main__ - INFO - Backup 阳明交换2(192.90.110.252)'s config successful.
++2016-12-30 11:38:50,014 - __main__ - INFO - Begin to backup 南昌县交换1(192.90.102.251)'s config ...
++2016-12-30 11:38:50,170 - __main__ - DEBUG - b"\r\n********************************************************************************\r\n*  Copyright(c) 2004-2010 Hangzhou H3C Tech. Co., Ltd. All rights reserved.    *\r\n*  Without the owner's prior written consent,                                  *\r\n*  no decompiling or reverse-engineering shall be allowed.                     *\r\n********************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:38:50,188 - __main__ - DEBUG - b'liuzheng\r\nPassword:'
++2016-12-30 11:38:50,204 - __main__ - DEBUG - b'\r\n<SW_NCXZH_1>'
++2016-12-30 11:38:50,326 - __main__ - DEBUG - b'\r\n%Apr  5 18:23:52:749 2000 SW_NCXZH_1 SHELL/5/LOGIN:- 1 - liuzheng(192.90.52.229) in unit1 loginsu \r\n Password:'
++2016-12-30 11:38:50,343 - __main__ - DEBUG - b'\r\nUser privilege level is 3, and only those commands can be used \r\nwhose level is equal or less than this.\r\nPrivilege note: 0-VISIT, 1-MONITOR, 2-SYSTEM, 3-MANAGE\r\n<SW_NCXZH_1>'
++2016-12-30 11:38:50,509 - __main__ - DEBUG - b'ftp 192.90.33.235\r\nTrying ...\r\nPress CTRL+K to abort\r\nConnected.\r\n220 (vsFTPd 2.0.5)\r\nUser(none):'
++2016-12-30 11:38:50,541 - __main__ - DEBUG - b'bknetcfg\r\n331 Please specify the password.\r\nPassword:'
++2016-12-30 11:38:51,090 - __main__ - INFO - Backup 南昌县交换1(192.90.102.251)'s config successful.
++2016-12-30 11:38:51,090 - __main__ - INFO - Begin to backup 南昌县交换2(192.90.102.252)'s config ...
++2016-12-30 11:38:51,213 - __main__ - DEBUG - b"\r\n********************************************************************************\r\n*  Copyright(c) 2004-2010 Hangzhou H3C Tech. Co., Ltd. All rights reserved.    *\r\n*  Without the owner's prior written consent,                                  *\r\n*  no decompiling or reverse-engineering shall be allowed.                     *\r\n********************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:38:51,301 - __main__ - DEBUG - b'liuzheng\r\nPassword:'
++2016-12-30 11:38:51,319 - __main__ - DEBUG - b'\r\n<SW_NCXZH_2>'
++2016-12-30 11:38:51,439 - __main__ - DEBUG - b'\r\n%Apr  2 21:46:34:074 2000 SW_NCXZH_2 SHELL/5/LOGIN:- 1 - liuzheng(192.90.52.229) in unit1 loginsu \r\n Password:'
++2016-12-30 11:38:51,458 - __main__ - DEBUG - b'\r\nUser privilege level is 3, and only those commands can be used \r\nwhose level is equal or less than this.\r\nPrivilege note: 0-VISIT, 1-MONITOR, 2-SYSTEM, 3-MANAGE\r\n<SW_NCXZH_2>'
++2016-12-30 11:38:51,618 - __main__ - DEBUG - b'ftp 192.90.33.235\r\nTrying ...\r\nPress CTRL+K to abort\r\nConnected.\r\n220 (vsFTPd 2.0.5)\r\nUser(none):'
++2016-12-30 11:38:51,638 - __main__ - DEBUG - b'bknetcfg\r\n331 Please specify the password.\r\nPassword:'
++2016-12-30 11:38:52,138 - __main__ - INFO - Backup 南昌县交换2(192.90.102.252)'s config successful.
++2016-12-30 11:38:52,138 - __main__ - INFO - Begin to backup 洪都交换(192.90.104.251)'s config ...
++2016-12-30 11:38:52,264 - __main__ - DEBUG - b"\r\n********************************************************************************\r\n*  Copyright(c) 2004-2011 Hangzhou H3C Tech. Co., Ltd. All rights reserved.    *\r\n*  Without the owner's prior written consent,                                  *\r\n*  no decompiling or reverse-engineering shall be allowed.                     *\r\n********************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:38:52,377 - __main__ - DEBUG - b'liuzheng\r\nPassword:'
++2016-12-30 11:38:52,395 - __main__ - DEBUG - b'\r\n<SW_HDDD_1>'
++2016-12-30 11:38:52,518 - __main__ - DEBUG - b'\r\n%Nov  4 22:14:17:588 2002 SW_HDDD_1 SHELL/5/LOGIN:- 1 - liuzheng(192.90.52.229) in unit1 loginsu \r\n Password:'
++2016-12-30 11:38:52,538 - __main__ - DEBUG - b'\r\nUser privilege level is 3, and only those commands can be used \r\nwhose level is equal or less than this.\r\nPrivilege note: 0-VISIT, 1-MONITOR, 2-SYSTEM, 3-MANAGE\r\n<SW_HDDD_1>'
++2016-12-30 11:38:52,727 - __main__ - DEBUG - b'ftp 192.90.33.235\r\nTrying ...\r\nPress CTRL+K to abort\r\nConnected.\r\n220 (vsFTPd 2.0.5)\r\nUser(none):'
++2016-12-30 11:38:52,758 - __main__ - DEBUG - b'bknetcfg\r\n331 Please specify the password.\r\nPassword:'
++2016-12-30 11:38:53,289 - __main__ - INFO - Backup 洪都交换(192.90.104.251)'s config successful.
++2016-12-30 11:38:53,289 - __main__ - INFO - Begin to backup 进贤交换(192.90.106.251)'s config ...
++2016-12-30 11:38:53,418 - __main__ - DEBUG - b"\r\n********************************************************************************\r\n*  Copyright(c) 2004-2011 Hangzhou H3C Tech. Co., Ltd. All rights reserved.    *\r\n*  Without the owner's prior written consent,                                  *\r\n*  no decompiling or reverse-engineering shall be allowed.                     *\r\n********************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:38:53,438 - __main__ - DEBUG - b'liuzheng\r\nPassword:'
++2016-12-30 11:38:53,454 - __main__ - DEBUG - b'\r\n<SW_JXXZH_1>'
++2016-12-30 11:38:53,576 - __main__ - DEBUG - b'\r\n%Jun 12 07:48:41:292 2000 SW_JXXZH_1 SHELL/5/LOGIN:- 1 - liuzheng(192.90.52.229) in unit1 loginsu \r\n Password:'
++2016-12-30 11:38:53,595 - __main__ - DEBUG - b'\r\nUser privilege level is 3, and only those commands can be used \r\nwhose level is equal or less than this.\r\nPrivilege note: 0-VISIT, 1-MONITOR, 2-SYSTEM, 3-MANAGE\r\n<SW_JXXZH_1>'
++2016-12-30 11:38:53,774 - __main__ - DEBUG - b'ftp 192.90.33.235\r\nTrying ...\r\nPress CTRL+K to abort\r\nConnected.\r\n220 (vsFTPd 2.0.5)\r\nUser(none):'
++2016-12-30 11:38:53,803 - __main__ - DEBUG - b'bknetcfg\r\n331 Please specify the password.\r\nPassword:'
++2016-12-30 11:38:54,314 - __main__ - INFO - Backup 进贤交换(192.90.106.251)'s config successful.
++2016-12-30 11:38:54,316 - __main__ - INFO - Begin to backup 高新交换1(192.90.108.251)'s config ...
++2016-12-30 11:38:54,439 - __main__ - DEBUG - b"\r\n********************************************************************************\r\n*  Copyright(c) 2004-2011 Hangzhou H3C Tech. Co., Ltd. All rights reserved.    *\r\n*  Without the owner's prior written consent,                                  *\r\n*  no decompiling or reverse-engineering shall be allowed.                     *\r\n********************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:38:54,493 - __main__ - DEBUG - b'liuzheng\r\nPassword:'
++2016-12-30 11:38:54,509 - __main__ - DEBUG - b'\r\n<SW_GXZH_1>'
++2016-12-30 11:38:54,631 - __main__ - DEBUG - b'\r\n%Sep 15 03:18:33:379 2002 SW_GXZH_1 SHELL/5/LOGIN:- 1 - liuzheng(192.90.52.229) in unit1 loginsu \r\n Password:'
++2016-12-30 11:38:54,651 - __main__ - DEBUG - b'\r\nUser privilege level is 3, and only those commands can be used \r\nwhose level is equal or less than this.\r\nPrivilege note: 0-VISIT, 1-MONITOR, 2-SYSTEM, 3-MANAGE\r\n<SW_GXZH_1>'
++2016-12-30 11:38:54,835 - __main__ - DEBUG - b'ftp 192.90.33.235\r\nTrying ...\r\nPress CTRL+K to abort\r\nConnected.\r\n220 (vsFTPd 2.0.5)\r\nUser(none):'
++2016-12-30 11:38:54,860 - __main__ - DEBUG - b'bknetcfg\r\n331 Please specify the password.\r\nPassword:'
++2016-12-30 11:38:55,362 - __main__ - INFO - Backup 高新交换1(192.90.108.251)'s config successful.
++2016-12-30 11:38:55,362 - __main__ - INFO - Begin to backup 高新交换2(192.90.108.252)'s config ...
++2016-12-30 11:38:55,508 - __main__ - DEBUG - b"\r\n********************************************************************************\r\n*  Copyright(c) 2004-2008 Hangzhou H3C Tech. Co., Ltd. All rights reserved.    *\r\n*  Without the owner's prior written consent,                                  *\r\n*  no decompiling or reverse-engineering shall be allowed.                     *\r\n********************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:38:55,525 - __main__ - DEBUG - b'liuzheng@system\r\nPassword:'
++2016-12-30 11:38:55,545 - __main__ - DEBUG - b'\r\n<SW_GXZH_2>'
++2016-12-30 11:38:55,658 - __main__ - DEBUG - b'\r\n%Apr  2 04:07:13:890 2000 SW_GXZH_2 SHELL/5/LOGIN:- 1 - liuzheng@system(192.90.52.229) in unit1 loginsu \r\n Password:'
++2016-12-30 11:38:55,674 - __main__ - DEBUG - b'\r\nUser privilege level is 3, and only those commands can be used \r\nwhose level is equal or less than this.\r\nPrivilege note: 0-VISIT, 1-MONITOR, 2-SYSTEM, 3-MANAGE\r\n<SW_GXZH_2>'
++2016-12-30 11:38:55,875 - __main__ - DEBUG - b'ftp 192.90.33.235\r\nTrying ...\r\nPress CTRL+K to abort\r\nConnected.\r\n220 (vsFTPd 2.0.5)\r\nUser(none):'
++2016-12-30 11:38:55,903 - __main__ - DEBUG - b'bknetcfg\r\n331 Please specify the password.\r\nPassword:'
++2016-12-30 11:38:56,364 - __main__ - INFO - Backup 高新交换2(192.90.108.252)'s config successful.
++2016-12-30 11:38:56,365 - __main__ - INFO - Begin to backup 新建交换(192.90.112.251)'s config ...
++2016-12-30 11:38:56,480 - __main__ - DEBUG - b"\r\n******************************************************************************\r\n* Copyright (c) 2004-2011 Hangzhou H3C Tech. Co., Ltd. All rights reserved.  *\r\n* Without the owner's prior written consent,                                 *\r\n* no decompiling or reverse-engineering shall be allowed.                    *\r\n******************************************************************************\r\n\r\n\r\nLogin authentication\r\n\r\n\r\nUsername:"
++2016-12-30 11:38:56,487 - __main__ - DEBUG - b'liuzheng\r\nPassword:'
++2016-12-30 11:38:56,509 - __main__ - DEBUG - b'\r\n<SW_XJXZH_1>'
++2016-12-30 11:38:56,527 - __main__ - DEBUG - b'su \r\n Password:'
++2016-12-30 11:38:56,550 - __main__ - DEBUG - b'\r\nUser privilege level is 3, and only those commands can be used \r\nwhose level is equal or less than this.\r\nPrivilege note: 0-VISIT, 1-MONITOR, 2-SYSTEM, 3-MANAGE\r\n<SW_XJXZH_1>'
++2016-12-30 11:38:56,596 - __main__ - DEBUG - b'ftp 192.90.33.235\r\nTrying 192.90.33.235 ...\r\nPress CTRL+K to abort \r\nConnected to 192.90.33.235. \r\n220 (vsFTPd 2.0.5)\r\nUser(192.90.33.235:(none)):'
++2016-12-30 11:38:56,611 - __main__ - DEBUG - b'bknetcfg\r\n331 Please specify the password.\r\nPassword:'
++2016-12-30 11:38:56,858 - __main__ - INFO - Backup 新建交换(192.90.112.251)'s config successful.
++2016-12-30 11:38:56,859 - __main__ - INFO - There are 19 of 19 devices backuped to ftp://192.90.33.235/20161230-113841.
+Index: bknetcfg/mylogging.json
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- bknetcfg/mylogging.json	(revision )
++++ bknetcfg/mylogging.json	(revision )
+@@ -0,0 +1,61 @@
++{
++    "version": 1,
++    "disable_existing_loggers": false,
++    "formatters": {
++        "simple": {
++            "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
++        }
++    },
++
++    "handlers": {
++        "console": {
++            "class": "logging.StreamHandler",
++            "level": "DEBUG",
++            "formatter": "simple",
++            "stream": "ext://sys.stdout"
++        },
++
++       "debug_file_handler": {
++            "class": "logging.handlers.RotatingFileHandler",
++            "level": "DEBUG",
++            "formatter": "simple",
++            "filename": "./log/debug.log",
++            "maxBytes": 10485760,
++            "backupCount": 20,
++            "encoding": "utf8"
++        },
++
++       "info_file_handler": {
++            "class": "logging.handlers.RotatingFileHandler",
++            "level": "INFO",
++            "formatter": "simple",
++            "filename": "./log/info.log",
++            "maxBytes": 10485760,
++            "backupCount": 20,
++            "encoding": "utf8"
++        },
++
++        "error_file_handler": {
++            "class": "logging.handlers.RotatingFileHandler",
++            "level": "ERROR",
++            "formatter": "simple",
++            "filename": "./log/errors.log",
++            "maxBytes": 10485760,
++            "backupCount": 20,
++            "encoding": "utf8"
++        }
++    },
++
++    "loggers": {
++        "my_module": {
++            "level": "ERROR",
++            "handlers": ["console"],
++            "propagate": "no"
++        }
++    },
++
++    "root": {
++        "level": "DEBUG",
++        "handlers": ["console","debug_file_handler", "info_file_handler", "error_file_handler"]
++    }
++}
+\ No newline at end of file
+Index: bknetcfg/log/info.log
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- bknetcfg/log/info.log	(revision )
++++ bknetcfg/log/info.log	(revision )
+@@ -0,0 +1,257 @@
++2016-12-27 19:24:26,537 - __main__ - INFO - ***Begin to backup network device's config to FTP...
++2016-12-27 19:24:26,537 - __main__ - INFO - Begin to create directory on FTP server for backup...
++2016-12-27 19:24:26,549 - __main__ - INFO - Create directory 20161227-192426 on FTP server 192.90.33.235 success!
++2016-12-27 19:24:26,550 - __main__ - INFO - Begin to get network device's parameter from DB server...
++2016-12-27 19:24:26,557 - __main__ - INFO - Get 81 network device's parameter from DB server.
++2016-12-27 19:24:26,558 - __main__ - INFO - Begin to backup 核心交换1(192.90.33.2)'s config ...
++2016-12-27 19:24:26,808 - __main__ - INFO - Backup 核心交换1(192.90.33.2)'s config successful.
++2016-12-27 19:24:26,808 - __main__ - INFO - Begin to backup 核心交换2(192.90.33.3)'s config ...
++2016-12-27 19:24:27,146 - __main__ - INFO - Backup 核心交换2(192.90.33.3)'s config successful.
++2016-12-27 19:24:27,147 - __main__ - INFO - Begin to backup 外联路由(192.90.254.65)'s config ...
++2016-12-27 19:24:27,436 - __main__ - INFO - Backup 外联路由(192.90.254.65)'s config successful.
++2016-12-27 19:24:27,436 - __main__ - INFO - Begin to backup 下联路由1(192.90.255.5)'s config ...
++2016-12-27 19:24:27,928 - __main__ - INFO - Backup 下联路由1(192.90.255.5)'s config successful.
++2016-12-27 19:24:27,929 - __main__ - INFO - Begin to backup 下联路由2(192.90.255.6)'s config ...
++2016-12-27 19:24:28,432 - __main__ - INFO - Backup 下联路由2(192.90.255.6)'s config successful.
++2016-12-27 19:24:28,432 - __main__ - INFO - Begin to backup 自助路由(192.90.254.97)'s config ...
++2016-12-27 19:24:28,715 - __main__ - INFO - Backup 自助路由(192.90.254.97)'s config successful.
++2016-12-27 19:24:28,715 - __main__ - INFO - Begin to backup 1楼交换1(192.90.33.11)'s config ...
++2016-12-27 19:24:29,690 - __main__ - INFO - Backup 1楼交换1(192.90.33.11)'s config successful.
++2016-12-27 19:24:29,690 - __main__ - INFO - Begin to backup 1楼交换2(192.90.33.12)'s config ...
++2016-12-27 19:24:30,644 - __main__ - INFO - Backup 1楼交换2(192.90.33.12)'s config successful.
++2016-12-27 19:24:30,644 - __main__ - INFO - Begin to backup 2楼交换1(192.90.33.21)'s config ...
++2016-12-27 19:24:31,139 - __main__ - INFO - Backup 2楼交换1(192.90.33.21)'s config successful.
++2016-12-27 19:24:31,139 - __main__ - INFO - Begin to backup 2楼交换2(192.90.33.22)'s config ...
++2016-12-27 19:24:31,492 - __main__ - INFO - Backup 2楼交换2(192.90.33.22)'s config successful.
++2016-12-27 19:24:31,492 - __main__ - INFO - Begin to backup 3楼交换(192.90.33.31)'s config ...
++2016-12-27 19:24:31,910 - __main__ - INFO - Backup 3楼交换(192.90.33.31)'s config successful.
++2016-12-27 19:24:31,910 - __main__ - INFO - Begin to backup 4楼交换(192.90.33.41)'s config ...
++2016-12-27 19:24:32,293 - __main__ - INFO - Backup 4楼交换(192.90.33.41)'s config successful.
++2016-12-27 19:24:32,294 - __main__ - INFO - Begin to backup 11楼交换(192.90.33.111)'s config ...
++2016-12-27 19:24:32,720 - __main__ - INFO - Backup 11楼交换(192.90.33.111)'s config successful.
++2016-12-27 19:24:32,721 - __main__ - INFO - Begin to backup 12楼交换(192.90.33.121)'s config ...
++2016-12-27 19:24:33,152 - __main__ - INFO - Backup 12楼交换(192.90.33.121)'s config successful.
++2016-12-27 19:24:33,153 - __main__ - INFO - Begin to backup 金库交换(192.90.33.151)'s config ...
++2016-12-27 19:24:34,146 - __main__ - INFO - Backup 金库交换(192.90.33.151)'s config successful.
++2016-12-27 19:24:34,147 - __main__ - INFO - Begin to backup 监控交换(192.90.33.141)'s config ...
++2016-12-27 19:24:35,169 - __main__ - INFO - Backup 监控交换(192.90.33.141)'s config successful.
++2016-12-27 19:24:35,169 - __main__ - INFO - Begin to backup 洪都社区(192.90.255.193)'s config ...
++2016-12-27 19:24:35,744 - __main__ - INFO - Backup 洪都社区(192.90.255.193)'s config successful.
++2016-12-27 19:24:35,745 - __main__ - INFO - Begin to backup 万科北社区(192.90.255.195)'s config ...
++2016-12-27 19:24:36,314 - __main__ - INFO - Backup 万科北社区(192.90.255.195)'s config successful.
++2016-12-27 19:24:36,315 - __main__ - INFO - Begin to backup 名门世家(192.90.255.197)'s config ...
++2016-12-27 19:24:36,944 - __main__ - INFO - Backup 名门世家(192.90.255.197)'s config successful.
++2016-12-27 19:24:36,944 - __main__ - INFO - Begin to backup 贤士花园(192.90.255.201)'s config ...
++2016-12-27 19:24:37,523 - __main__ - INFO - Backup 贤士花园(192.90.255.201)'s config successful.
++2016-12-27 19:24:37,524 - __main__ - INFO - Begin to backup 鹿璟名居(192.90.255.199)'s config ...
++2016-12-27 19:24:38,087 - __main__ - INFO - Backup 鹿璟名居(192.90.255.199)'s config successful.
++2016-12-27 19:24:38,088 - __main__ - INFO - Begin to backup 莱卡小镇(192.90.255.205)'s config ...
++2016-12-27 19:24:38,666 - __main__ - INFO - Backup 莱卡小镇(192.90.255.205)'s config successful.
++2016-12-27 19:24:38,667 - __main__ - INFO - Begin to backup 星加坡花园(192.90.255.203)'s config ...
++2016-12-27 19:24:39,236 - __main__ - INFO - Backup 星加坡花园(192.90.255.203)'s config successful.
++2016-12-27 19:24:39,237 - __main__ - INFO - Begin to backup 铁路八村(192.90.255.207)'s config ...
++2016-12-27 19:24:39,912 - __main__ - INFO - Backup 铁路八村(192.90.255.207)'s config successful.
++2016-12-27 19:24:39,912 - __main__ - INFO - Begin to backup 居住主题(192.90.255.209)'s config ...
++2016-12-27 19:24:40,489 - __main__ - INFO - Backup 居住主题(192.90.255.209)'s config successful.
++2016-12-27 19:24:40,490 - __main__ - INFO - Begin to backup 桃苑(192.90.255.217)'s config ...
++2016-12-27 19:24:41,231 - __main__ - INFO - Backup 桃苑(192.90.255.217)'s config successful.
++2016-12-27 19:24:41,231 - __main__ - INFO - Begin to backup 南钢(192.90.255.215)'s config ...
++2016-12-27 19:24:41,806 - __main__ - INFO - Backup 南钢(192.90.255.215)'s config successful.
++2016-12-27 19:24:41,807 - __main__ - INFO - Begin to backup 安义新河湾(192.90.255.213)'s config ...
++2016-12-27 19:24:42,406 - __main__ - INFO - Backup 安义新河湾(192.90.255.213)'s config successful.
++2016-12-27 19:24:42,407 - __main__ - INFO - Begin to backup 进贤新辉(192.90.255.211)'s config ...
++2016-12-27 19:24:43,017 - __main__ - INFO - Backup 进贤新辉(192.90.255.211)'s config successful.
++2016-12-27 19:24:43,017 - __main__ - INFO - Begin to backup 系马桩(192.90.255.219)'s config ...
++2016-12-27 19:24:43,602 - __main__ - INFO - Backup 系马桩(192.90.255.219)'s config successful.
++2016-12-27 19:24:43,603 - __main__ - INFO - Begin to backup 青云小镇(192.90.255.221)'s config ...
++2016-12-27 19:24:44,268 - __main__ - INFO - Backup 青云小镇(192.90.255.221)'s config successful.
++2016-12-27 19:24:44,268 - __main__ - INFO - Begin to backup 博览路(192.90.255.223)'s config ...
++2016-12-27 19:24:44,865 - __main__ - INFO - Backup 博览路(192.90.255.223)'s config successful.
++2016-12-27 19:24:44,866 - __main__ - INFO - Begin to backup 中山路(192.90.255.225)'s config ...
++2016-12-27 19:24:45,413 - __main__ - INFO - Backup 中山路(192.90.255.225)'s config successful.
++2016-12-27 19:24:45,413 - __main__ - INFO - Begin to backup 江大南路(192.90.255.227)'s config ...
++2016-12-27 19:24:45,962 - __main__ - INFO - Backup 江大南路(192.90.255.227)'s config successful.
++2016-12-27 19:24:45,963 - __main__ - INFO - Begin to backup 文教路(192.90.255.229)'s config ...
++2016-12-27 19:24:46,498 - __main__ - INFO - Backup 文教路(192.90.255.229)'s config successful.
++2016-12-27 19:24:46,499 - __main__ - INFO - Begin to backup 象南(192.90.255.231)'s config ...
++2016-12-27 19:24:47,038 - __main__ - INFO - Backup 象南(192.90.255.231)'s config successful.
++2016-12-27 19:24:47,039 - __main__ - INFO - Begin to backup 百瑞四季(192.90.252.2)'s config ...
++2016-12-27 19:24:47,385 - __main__ - INFO - Backup 百瑞四季(192.90.252.2)'s config successful.
++2016-12-27 19:24:47,385 - __main__ - INFO - Begin to backup 巨汇建材(192.90.252.90)'s config ...
++2016-12-27 19:24:47,759 - __main__ - INFO - Backup 巨汇建材(192.90.252.90)'s config successful.
++2016-12-27 19:24:47,760 - __main__ - INFO - Begin to backup 全季酒店(192.90.252.10)'s config ...
++2016-12-27 19:24:48,233 - __main__ - INFO - Backup 全季酒店(192.90.252.10)'s config successful.
++2016-12-27 19:24:48,234 - __main__ - INFO - Begin to backup 阳明路由1(192.90.255.149)'s config ...
++2016-12-27 19:24:48,570 - __main__ - INFO - Backup 阳明路由1(192.90.255.149)'s config successful.
++2016-12-27 19:24:48,570 - __main__ - INFO - Begin to backup 阳明路由2(192.90.255.150)'s config ...
++2016-12-27 19:24:48,890 - __main__ - INFO - Backup 阳明路由2(192.90.255.150)'s config successful.
++2016-12-27 19:24:48,890 - __main__ - INFO - Begin to backup 阳明交换1(192.90.110.251)'s config ...
++2016-12-27 19:24:50,003 - __main__ - INFO - Backup 阳明交换1(192.90.110.251)'s config successful.
++2016-12-27 19:24:50,004 - __main__ - INFO - Begin to backup 阳明交换2(192.90.110.252)'s config ...
++2016-12-27 19:24:51,133 - __main__ - INFO - Backup 阳明交换2(192.90.110.252)'s config successful.
++2016-12-27 19:24:51,134 - __main__ - INFO - Begin to backup 仿古街(192.90.252.42)'s config ...
++2016-12-27 19:24:51,482 - __main__ - INFO - Backup 仿古街(192.90.252.42)'s config successful.
++2016-12-27 19:24:51,483 - __main__ - INFO - Begin to backup 洪城路由1(192.90.255.129)'s config ...
++2016-12-27 19:24:52,110 - __main__ - INFO - Backup 洪城路由1(192.90.255.129)'s config successful.
++2016-12-27 19:24:52,111 - __main__ - INFO - Begin to backup 洪城路由2(192.90.255.130)'s config ...
++2016-12-27 19:24:52,995 - __main__ - INFO - Backup 洪城路由2(192.90.255.130)'s config successful.
++2016-12-27 19:24:52,996 - __main__ - INFO - Begin to backup 汇景酒店(192.90.252.106)'s config ...
++2016-12-27 19:24:53,331 - __main__ - INFO - Backup 汇景酒店(192.90.252.106)'s config successful.
++2016-12-27 19:24:53,331 - __main__ - INFO - Begin to backup 悦蓝山(192.90.252.50)'s config ...
++2016-12-27 19:24:53,721 - __main__ - INFO - Backup 悦蓝山(192.90.252.50)'s config successful.
++2016-12-27 19:24:53,722 - __main__ - INFO - Begin to backup 南昌县医院(192.90.252.34)'s config ...
++2016-12-27 19:24:54,033 - __main__ - INFO - Backup 南昌县医院(192.90.252.34)'s config successful.
++2016-12-27 19:24:54,034 - __main__ - INFO - Begin to backup 南昌县路由2(192.90.255.134)'s config ...
++2016-12-27 19:24:54,388 - __main__ - INFO - Backup 南昌县路由2(192.90.255.134)'s config successful.
++2016-12-27 19:24:54,388 - __main__ - INFO - Begin to backup 南昌县路由1(192.90.255.133)'s config ...
++2016-12-27 19:24:55,036 - __main__ - INFO - Backup 南昌县路由1(192.90.255.133)'s config successful.
++2016-12-27 19:24:55,037 - __main__ - INFO - Begin to backup 南昌县交换1(192.90.102.251)'s config ...
++2016-12-27 19:24:56,117 - __main__ - INFO - Backup 南昌县交换1(192.90.102.251)'s config successful.
++2016-12-27 19:24:56,118 - __main__ - INFO - Begin to backup 南昌县交换2(192.90.102.252)'s config ...
++2016-12-27 19:24:57,227 - __main__ - INFO - Backup 南昌县交换2(192.90.102.252)'s config successful.
++2016-12-27 19:24:57,228 - __main__ - INFO - Begin to backup 水岸皇庭(192.90.252.18)'s config ...
++2016-12-27 19:24:57,532 - __main__ - INFO - Backup 水岸皇庭(192.90.252.18)'s config successful.
++2016-12-27 19:24:57,533 - __main__ - INFO - Begin to backup 工贸学院(192.90.252.58)'s config ...
++2016-12-27 19:24:57,847 - __main__ - INFO - Backup 工贸学院(192.90.252.58)'s config successful.
++2016-12-27 19:24:57,847 - __main__ - INFO - Begin to backup 洪都路由2(192.90.255.138)'s config ...
++2016-12-27 19:24:58,173 - __main__ - INFO - Backup 洪都路由2(192.90.255.138)'s config successful.
++2016-12-27 19:24:58,173 - __main__ - INFO - Begin to backup 洪都路由1(192.90.255.137)'s config ...
++2016-12-27 19:24:58,858 - __main__ - INFO - Backup 洪都路由1(192.90.255.137)'s config successful.
++2016-12-27 19:24:58,859 - __main__ - INFO - Begin to backup 洪都交换(192.90.104.251)'s config ...
++2016-12-27 19:24:59,984 - __main__ - INFO - Backup 洪都交换(192.90.104.251)'s config successful.
++2016-12-27 19:24:59,984 - __main__ - INFO - Begin to backup 进贤路由2(192.90.255.142)'s config ...
++2016-12-27 19:25:03,539 - __main__ - INFO - Backup 进贤路由2(192.90.255.142)'s config successful.
++2016-12-27 19:25:03,540 - __main__ - INFO - Begin to backup 进贤路由1(192.90.255.141)'s config ...
++2016-12-27 19:25:04,180 - __main__ - INFO - Backup 进贤路由1(192.90.255.141)'s config successful.
++2016-12-27 19:25:04,180 - __main__ - INFO - Begin to backup 进贤交换(192.90.106.251)'s config ...
++2016-12-27 19:25:05,272 - __main__ - INFO - Backup 进贤交换(192.90.106.251)'s config successful.
++2016-12-27 19:25:05,273 - __main__ - INFO - Begin to backup 香江商城(192.90.252.66)'s config ...
++2016-12-27 19:25:05,560 - __main__ - INFO - Backup 香江商城(192.90.252.66)'s config successful.
++2016-12-27 19:25:05,560 - __main__ - INFO - Begin to backup 高新路由2(192.90.255.146)'s config ...
++2016-12-27 19:25:05,887 - __main__ - INFO - Backup 高新路由2(192.90.255.146)'s config successful.
++2016-12-27 19:25:05,887 - __main__ - INFO - Begin to backup 高新路由1(192.90.255.145)'s config ...
++2016-12-27 19:25:06,490 - __main__ - INFO - Backup 高新路由1(192.90.255.145)'s config successful.
++2016-12-27 19:25:06,491 - __main__ - INFO - Begin to backup 高新交换1(192.90.108.251)'s config ...
++2016-12-27 19:25:07,583 - __main__ - INFO - Backup 高新交换1(192.90.108.251)'s config successful.
++2016-12-27 19:25:07,584 - __main__ - INFO - Begin to backup 高新交换2(192.90.108.252)'s config ...
++2016-12-27 19:25:28,586 - __main__ - ERROR - Can not connect to 高新交换2(192.90.108.252)!
++2016-12-27 19:25:28,587 - __main__ - ERROR - Backup 高新交换2(192.90.108.252)'s config failure!
++2016-12-27 19:25:28,588 - __main__ - INFO - Begin to backup 翠苑路(192.90.252.74)'s config ...
++2016-12-27 19:25:28,934 - __main__ - INFO - Backup 翠苑路(192.90.252.74)'s config successful.
++2016-12-27 19:25:28,935 - __main__ - INFO - Begin to backup 省高院(192.90.252.82)'s config ...
++2016-12-27 19:25:29,504 - __main__ - INFO - Backup 省高院(192.90.252.82)'s config successful.
++2016-12-27 19:25:29,505 - __main__ - INFO - Begin to backup 西客站(192.90.252.98)'s config ...
++2016-12-27 19:25:29,764 - __main__ - INFO - Backup 西客站(192.90.252.98)'s config successful.
++2016-12-27 19:25:29,765 - __main__ - INFO - Begin to backup 新建大道(192.90.252.114)'s config ...
++2016-12-27 19:25:30,527 - __main__ - INFO - Backup 新建大道(192.90.252.114)'s config successful.
++2016-12-27 19:25:30,528 - __main__ - INFO - Begin to backup 新建路由1(192.90.255.153)'s config ...
++2016-12-27 19:25:30,930 - __main__ - INFO - Backup 新建路由1(192.90.255.153)'s config successful.
++2016-12-27 19:25:30,930 - __main__ - INFO - Begin to backup 新建路由2(192.90.255.154)'s config ...
++2016-12-27 19:25:31,257 - __main__ - INFO - Backup 新建路由2(192.90.255.154)'s config successful.
++2016-12-27 19:25:31,258 - __main__ - INFO - Begin to backup 新建交换(192.90.112.251)'s config ...
++2016-12-27 19:25:31,767 - __main__ - INFO - Backup 新建交换(192.90.112.251)'s config successful.
++2016-12-27 19:25:31,767 - __main__ - INFO - Begin to backup 青云路由1(192.90.255.157)'s config ...
++2016-12-27 19:25:32,349 - __main__ - INFO - Backup 青云路由1(192.90.255.157)'s config successful.
++2016-12-27 19:25:32,350 - __main__ - INFO - Begin to backup 青云路由2(192.90.255.158)'s config ...
++2016-12-27 19:25:32,974 - __main__ - INFO - Backup 青云路由2(192.90.255.158)'s config successful.
++2016-12-27 19:25:32,975 - __main__ - INFO - Begin to backup 安义路由1(192.90.255.161)'s config ...
++2016-12-27 19:25:33,596 - __main__ - INFO - Backup 安义路由1(192.90.255.161)'s config successful.
++2016-12-27 19:25:33,597 - __main__ - INFO - Begin to backup 安义路由2(192.90.255.162)'s config ...
++2016-12-27 19:25:34,244 - __main__ - INFO - Backup 安义路由2(192.90.255.162)'s config successful.
++2016-12-27 19:25:34,245 - __main__ - INFO - Begin to backup 八一路由1(192.90.255.165)'s config ...
++2016-12-27 19:25:34,919 - __main__ - INFO - Backup 八一路由1(192.90.255.165)'s config successful.
++2016-12-27 19:25:34,920 - __main__ - INFO - Begin to backup 八一路由2(192.90.255.166)'s config ...
++2016-12-27 19:25:35,550 - __main__ - INFO - Backup 八一路由2(192.90.255.166)'s config successful.
++2016-12-27 19:25:35,550 - __main__ - INFO - Begin to backup 北东路由1(192.90.255.169)'s config ...
++2016-12-27 19:25:36,272 - __main__ - INFO - Backup 北东路由1(192.90.255.169)'s config successful.
++2016-12-27 19:25:36,273 - __main__ - INFO - Begin to backup 北东路由2(192.90.255.170)'s config ...
++2016-12-27 19:25:36,921 - __main__ - INFO - Backup 北东路由2(192.90.255.170)'s config successful.
++2016-12-27 19:25:36,921 - __main__ - INFO - There are 80 of 81 devices backuped to ftp://192.90.33.235/20161227-192426.
++2016-12-30 11:37:02,191 - __main__ - INFO - ***Begin to backup network device's config to FTP...
++2016-12-30 11:37:02,206 - __main__ - INFO - Begin to create directory on FTP server for backup...
++2016-12-30 11:37:02,299 - __main__ - INFO - Create directory 20161230-113702 on FTP server 192.90.33.235 success!
++2016-12-30 11:37:02,300 - __main__ - INFO - Begin to get network device's parameter from DB server...
++2016-12-30 11:37:02,328 - __main__ - INFO - Get 19 network device's parameter from DB server.
++2016-12-30 11:37:02,328 - __main__ - INFO - Begin to backup 1楼交换1(192.90.33.11)'s config ...
++2016-12-30 11:37:03,382 - __main__ - INFO - Backup 1楼交换1(192.90.33.11)'s config successful.
++2016-12-30 11:37:03,383 - __main__ - INFO - Begin to backup 1楼交换2(192.90.33.12)'s config ...
++2016-12-30 11:37:04,383 - __main__ - INFO - Backup 1楼交换2(192.90.33.12)'s config successful.
++2016-12-30 11:37:04,384 - __main__ - INFO - Begin to backup 2楼交换1(192.90.33.21)'s config ...
++2016-12-30 11:37:04,846 - __main__ - INFO - Backup 2楼交换1(192.90.33.21)'s config successful.
++2016-12-30 11:37:04,846 - __main__ - INFO - Begin to backup 2楼交换2(192.90.33.22)'s config ...
++2016-12-30 11:37:05,212 - __main__ - INFO - Backup 2楼交换2(192.90.33.22)'s config successful.
++2016-12-30 11:37:05,212 - __main__ - INFO - Begin to backup 3楼交换(192.90.33.31)'s config ...
++2016-12-30 11:37:05,773 - __main__ - INFO - Backup 3楼交换(192.90.33.31)'s config successful.
++2016-12-30 11:37:05,774 - __main__ - INFO - Begin to backup 4楼交换(192.90.33.41)'s config ...
++2016-12-30 11:37:06,141 - __main__ - INFO - Backup 4楼交换(192.90.33.41)'s config successful.
++2016-12-30 11:37:06,141 - __main__ - INFO - Begin to backup 11楼交换(192.90.33.111)'s config ...
++2016-12-30 11:37:06,609 - __main__ - INFO - Backup 11楼交换(192.90.33.111)'s config successful.
++2016-12-30 11:37:06,609 - __main__ - INFO - Begin to backup 12楼交换(192.90.33.121)'s config ...
++2016-12-30 11:37:07,321 - __main__ - INFO - Backup 12楼交换(192.90.33.121)'s config successful.
++2016-12-30 11:37:07,321 - __main__ - INFO - Begin to backup 金库交换(192.90.33.151)'s config ...
++2016-12-30 11:37:08,301 - __main__ - INFO - Backup 金库交换(192.90.33.151)'s config successful.
++2016-12-30 11:37:08,303 - __main__ - INFO - Begin to backup 监控交换(192.90.33.141)'s config ...
++2016-12-30 11:37:09,339 - __main__ - INFO - Backup 监控交换(192.90.33.141)'s config successful.
++2016-12-30 11:37:09,339 - __main__ - INFO - Begin to backup 阳明交换1(192.90.110.251)'s config ...
++2016-12-30 11:37:10,443 - __main__ - INFO - Backup 阳明交换1(192.90.110.251)'s config successful.
++2016-12-30 11:37:10,443 - __main__ - INFO - Begin to backup 阳明交换2(192.90.110.252)'s config ...
++2016-12-30 11:37:11,511 - __main__ - INFO - Backup 阳明交换2(192.90.110.252)'s config successful.
++2016-12-30 11:37:11,511 - __main__ - INFO - Begin to backup 南昌县交换1(192.90.102.251)'s config ...
++2016-12-30 11:37:12,640 - __main__ - INFO - Backup 南昌县交换1(192.90.102.251)'s config successful.
++2016-12-30 11:37:12,640 - __main__ - INFO - Begin to backup 南昌县交换2(192.90.102.252)'s config ...
++2016-12-30 11:37:13,782 - __main__ - INFO - Backup 南昌县交换2(192.90.102.252)'s config successful.
++2016-12-30 11:37:13,783 - __main__ - INFO - Begin to backup 洪都交换(192.90.104.251)'s config ...
++2016-12-30 11:37:14,810 - __main__ - INFO - Backup 洪都交换(192.90.104.251)'s config successful.
++2016-12-30 11:37:14,810 - __main__ - INFO - Begin to backup 进贤交换(192.90.106.251)'s config ...
++2016-12-30 11:37:15,854 - __main__ - INFO - Backup 进贤交换(192.90.106.251)'s config successful.
++2016-12-30 11:37:15,855 - __main__ - INFO - Begin to backup 高新交换1(192.90.108.251)'s config ...
++2016-12-30 11:37:16,913 - __main__ - INFO - Backup 高新交换1(192.90.108.251)'s config successful.
++2016-12-30 11:37:16,914 - __main__ - INFO - Begin to backup 高新交换2(192.90.108.252)'s config ...
++2016-12-30 11:37:17,946 - __main__ - INFO - Backup 高新交换2(192.90.108.252)'s config successful.
++2016-12-30 11:37:17,946 - __main__ - INFO - Begin to backup 新建交换(192.90.112.251)'s config ...
++2016-12-30 11:37:18,658 - __main__ - INFO - Backup 新建交换(192.90.112.251)'s config successful.
++2016-12-30 11:37:18,659 - __main__ - INFO - There are 19 of 19 devices backuped to ftp://192.90.33.235/20161230-113702.
++2016-12-30 11:38:41,414 - __main__ - INFO - ***Begin to backup network device's config to FTP...
++2016-12-30 11:38:41,414 - __main__ - INFO - Begin to create directory on FTP server for backup...
++2016-12-30 11:38:41,426 - __main__ - INFO - Create directory 20161230-113841 on FTP server 192.90.33.235 success!
++2016-12-30 11:38:41,427 - __main__ - INFO - Begin to get network device's parameter from DB server...
++2016-12-30 11:38:41,434 - __main__ - INFO - Get 19 network device's parameter from DB server.
++2016-12-30 11:38:41,434 - __main__ - INFO - Begin to backup 1楼交换1(192.90.33.11)'s config ...
++2016-12-30 11:38:42,508 - __main__ - INFO - Backup 1楼交换1(192.90.33.11)'s config successful.
++2016-12-30 11:38:42,509 - __main__ - INFO - Begin to backup 1楼交换2(192.90.33.12)'s config ...
++2016-12-30 11:38:43,516 - __main__ - INFO - Backup 1楼交换2(192.90.33.12)'s config successful.
++2016-12-30 11:38:43,516 - __main__ - INFO - Begin to backup 2楼交换1(192.90.33.21)'s config ...
++2016-12-30 11:38:43,945 - __main__ - INFO - Backup 2楼交换1(192.90.33.21)'s config successful.
++2016-12-30 11:38:43,945 - __main__ - INFO - Begin to backup 2楼交换2(192.90.33.22)'s config ...
++2016-12-30 11:38:44,300 - __main__ - INFO - Backup 2楼交换2(192.90.33.22)'s config successful.
++2016-12-30 11:38:44,300 - __main__ - INFO - Begin to backup 3楼交换(192.90.33.31)'s config ...
++2016-12-30 11:38:44,647 - __main__ - INFO - Backup 3楼交换(192.90.33.31)'s config successful.
++2016-12-30 11:38:44,648 - __main__ - INFO - Begin to backup 4楼交换(192.90.33.41)'s config ...
++2016-12-30 11:38:44,973 - __main__ - INFO - Backup 4楼交换(192.90.33.41)'s config successful.
++2016-12-30 11:38:44,973 - __main__ - INFO - Begin to backup 11楼交换(192.90.33.111)'s config ...
++2016-12-30 11:38:45,428 - __main__ - INFO - Backup 11楼交换(192.90.33.111)'s config successful.
++2016-12-30 11:38:45,429 - __main__ - INFO - Begin to backup 12楼交换(192.90.33.121)'s config ...
++2016-12-30 11:38:45,827 - __main__ - INFO - Backup 12楼交换(192.90.33.121)'s config successful.
++2016-12-30 11:38:45,828 - __main__ - INFO - Begin to backup 金库交换(192.90.33.151)'s config ...
++2016-12-30 11:38:46,793 - __main__ - INFO - Backup 金库交换(192.90.33.151)'s config successful.
++2016-12-30 11:38:46,794 - __main__ - INFO - Begin to backup 监控交换(192.90.33.141)'s config ...
++2016-12-30 11:38:47,806 - __main__ - INFO - Backup 监控交换(192.90.33.141)'s config successful.
++2016-12-30 11:38:47,806 - __main__ - INFO - Begin to backup 阳明交换1(192.90.110.251)'s config ...
++2016-12-30 11:38:48,860 - __main__ - INFO - Backup 阳明交换1(192.90.110.251)'s config successful.
++2016-12-30 11:38:48,860 - __main__ - INFO - Begin to backup 阳明交换2(192.90.110.252)'s config ...
++2016-12-30 11:38:50,014 - __main__ - INFO - Backup 阳明交换2(192.90.110.252)'s config successful.
++2016-12-30 11:38:50,014 - __main__ - INFO - Begin to backup 南昌县交换1(192.90.102.251)'s config ...
++2016-12-30 11:38:51,090 - __main__ - INFO - Backup 南昌县交换1(192.90.102.251)'s config successful.
++2016-12-30 11:38:51,090 - __main__ - INFO - Begin to backup 南昌县交换2(192.90.102.252)'s config ...
++2016-12-30 11:38:52,138 - __main__ - INFO - Backup 南昌县交换2(192.90.102.252)'s config successful.
++2016-12-30 11:38:52,138 - __main__ - INFO - Begin to backup 洪都交换(192.90.104.251)'s config ...
++2016-12-30 11:38:53,289 - __main__ - INFO - Backup 洪都交换(192.90.104.251)'s config successful.
++2016-12-30 11:38:53,289 - __main__ - INFO - Begin to backup 进贤交换(192.90.106.251)'s config ...
++2016-12-30 11:38:54,314 - __main__ - INFO - Backup 进贤交换(192.90.106.251)'s config successful.
++2016-12-30 11:38:54,316 - __main__ - INFO - Begin to backup 高新交换1(192.90.108.251)'s config ...
++2016-12-30 11:38:55,362 - __main__ - INFO - Backup 高新交换1(192.90.108.251)'s config successful.
++2016-12-30 11:38:55,362 - __main__ - INFO - Begin to backup 高新交换2(192.90.108.252)'s config ...
++2016-12-30 11:38:56,364 - __main__ - INFO - Backup 高新交换2(192.90.108.252)'s config successful.
++2016-12-30 11:38:56,365 - __main__ - INFO - Begin to backup 新建交换(192.90.112.251)'s config ...
++2016-12-30 11:38:56,858 - __main__ - INFO - Backup 新建交换(192.90.112.251)'s config successful.
++2016-12-30 11:38:56,859 - __main__ - INFO - There are 19 of 19 devices backuped to ftp://192.90.33.235/20161230-113841.

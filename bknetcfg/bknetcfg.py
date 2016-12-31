@@ -60,8 +60,8 @@ def get_devices(db_server):
     result=[]
     try:
         with conn.cursor() as cursor:
-            sql = 'SELECT vendor, sw_ver, name, hostname, ipaddr, user, passwd, supasswd FROM cn_device WHERE bak_cfg = % s ORDER BY hostname'
-            cursor.execute(sql, '1')
+            sql = 'SELECT vendor, sw_ver, name, hostname, ipaddr, user, passwd, supasswd FROM cn_device WHERE ipaddr = % s ORDER BY hostname'
+            cursor.execute(sql, '192.90.254.97')
             result = cursor.fetchall()
 
         # 没有设置默认自动提交，需要主动提交，以保存所执行的语句
@@ -73,6 +73,32 @@ def get_devices(db_server):
         conn.close()
         logger.info("Get " + str(len(result)) + " network device's parameter from DB server.")
         return result
+
+def get_cmds(db_server, group_name):
+    # print(sys._getframe().f_code.co_name)
+    logger.info("Begin to get commands from DB server...")
+    try:
+        conn = pymysql.connect(**db_server)
+    except:
+        logger.error("Can not connect to DB server " + DB_SERVER['host'] + "!")
+    result = []
+    try:
+        with conn.cursor() as cursor:
+            sql = 'SELECT c.seq_in_group, c.prompt, c.command FROM cn_cmd_group g, cn_cmd c WHERE g.group_name= % s AND c.group_id=g.id ORDER BY c.seq_in_group'
+            cursor.execute(sql, group_name)
+            result = cursor.fetchall()
+
+            # 没有设置默认自动提交，需要主动提交，以保存所执行的语句
+            # conn.commit()
+            #
+    except:
+        logger.error("Can not get any commands to execute from DB server!")
+    finally:
+        conn.close()
+        logger.info("Get " + str(len(result)) + " commands to execute from DB server.")
+        return result
+
+
 
 def bak_H3C_Sv5_cfg(device, ftp_server):
     #适用于S3100、S3100v2
@@ -243,6 +269,29 @@ def bak_CSC_v12_cfg(device, ftp_server):
         logger.error("Backup " + device['name'] + "(" + device['ipaddr'] + ")'s config failure!")
         return 0
 
+def r_exec(device, cmds):
+    logger.info("Begin to execute commands on " + device['name'] + "(" + device['ipaddr'] + "...")
+    try:
+        tn = telnetlib.Telnet(device['ipaddr'])
+        tn.set_debuglevel(2)
+    except:
+        logger.error("Can not connect to " + device['name'] + "(" + device['ipaddr'] + ")!")
+        logger.error("Execute commands on " + device['name'] + "(" + device['ipaddr'] + ") failure!")
+        return 0
+
+    try:
+        for cmd in cmds:
+            print(cmd)
+            print(cmd['prompt'].encode('utf-8'))
+            logger.debug(tn.read_until(eval(cmd['prompt'])))
+            tn.write((eval(cmd['command'])))
+        tn.close()
+        logger.info("Execute commands on " + device['name'] + "(" + device['ipaddr'] + ") successful.")
+        return 1
+    except:
+        logger.error("Encounter errors when executing commands on " + device['name'] + "!")
+        logger.error("Execute commands on " + device['name'] + "(" + device['ipaddr'] + ") failure!")
+        return 0
 
 
 if __name__ == '__main__':
@@ -254,8 +303,13 @@ if __name__ == '__main__':
     ftp_server = mk_bak_dir_on_ftp(FTP_SERVER, bat_no)
     FTP_SERVER['bak_dir'] = bat_no
     devices = get_devices(DB_SERVER)
+
     backed_devices = 0
+
     for device in devices:
-        backed_devices = backed_devices + eval("bak_" + device['vendor'] + "_" + device['sw_ver'] + "_cfg")(device, FTP_SERVER)
+        #backed_devices = backed_devices + eval("bak_" + device['vendor'] + "_" + device['sw_ver'] + "_cfg")(device, FTP_SERVER)
+        group_name = "bak_" + device['vendor'] + "_" + device['sw_ver'] + "_cfg"
+        cmds = get_cmds(DB_SERVER, group_name)
+        backed_devices = r_exec(device, cmds)
     logger.info("There are " + str(backed_devices) + " of " + str(len(devices)) + " devices backuped to ftp://" + \
           FTP_SERVER['ip'] + '/' + FTP_SERVER['bak_dir'] + ".")
