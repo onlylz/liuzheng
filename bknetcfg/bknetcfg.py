@@ -8,6 +8,7 @@ from ftplib import FTP
 import pymysql
 import logging
 from mylogging import setup_logging
+import socket
 
 FTP_SERVER = {'ip': '192.90.33.235',
               'port': 21,
@@ -98,7 +99,17 @@ def get_cmds(db_server, group_name):
         logger.info("Get " + str(len(result)) + " commands to execute from DB server.")
         return result
 
+def send_sms(content):
 
+    h = '000000006008'
+    t = str(datetime.datetime.strftime(datetime.datetime.now(), '%m-%d %H:%M'))
+    header = h + t
+    c = header + " " + content
+    print(c)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.connect(('dxpt.com', 8888))
+    sock.send(c.encode("utf-8"))
+    sock.close()
 
 def bak_H3C_Sv5_cfg(device, ftp_server):
     #适用于S3100、S3100v2
@@ -311,5 +322,10 @@ if __name__ == '__main__':
         group_name = "bak_" + device['vendor'] + "_" + device['sw_ver'] + "_cfg"
         cmds = get_cmds(DB_SERVER, group_name)
         backed_devices = r_exec(device, cmds)
-    logger.info("There are " + str(backed_devices) + " of " + str(len(devices)) + " devices backuped to ftp://" + \
-          FTP_SERVER['ip'] + '/' + FTP_SERVER['bak_dir'] + ".")
+    content = str(backed_devices) + "/" + str(len(devices)) + "设备配置已备份至ftp://" + \
+          FTP_SERVER['ip'] + '/' + FTP_SERVER['bak_dir'] + "."
+    logger.info(content)
+    send_sms(content)
+
+
+
